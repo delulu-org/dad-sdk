@@ -61,6 +61,15 @@ async function devHttpAddon(addon: HttpAddonDefinition, port: number) {
   const handler = createHttpAddonHandler(addon);
 
   const server = createServer(async (nodeReq, nodeRes) => {
+    // Dev-only: serve the addon's manifest from the root so `dad test`
+    // can validate a local dev server (see probe.ts comment).
+    if (nodeReq.method === 'GET' && (nodeReq.url === '/manifest.json' || nodeReq.url === '/manifest')) {
+      nodeRes.statusCode = 200;
+      nodeRes.setHeader('Content-Type', 'application/json');
+      nodeRes.end(JSON.stringify(addon.manifest));
+      return;
+    }
+
     const url = `http://localhost:${port}${nodeReq.url}`;
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(nodeReq.headers)) {

@@ -76,13 +76,23 @@ fs.mkdirSync(scopeDir, { recursive: true });
 
   await new Promise((resolve) => setTimeout(resolve, 800)); // let the server bind
 
-  const res = await fetch('http://localhost:7999/streams/movie/10378');
+const res = await fetch('http://localhost:7999/streams/movie/10378');
   const body = await res.json();
+  const manifestRes = await fetch('http://localhost:7999/manifest.json');
+  const manifestBody = await manifestRes.json();
+  const testResult = spawnSync('node', [CLI, 'test', 'http://localhost:7999/manifest.json'], { encoding: 'utf-8' });
   proc.kill();
 
   assert.equal(res.status, 200);
   assert.equal(body[0].title, 'Example 1080p Stream');
   assert.match(stdout, /Listening on http:\/\/localhost:7999/);
+
+  // dad dev must serve /manifest.json from the server root (probe.ts contract)
+  // so `dad test <url>` can validate a LOCAL dev server end-to-end.
+  assert.equal(manifestRes.status, 200);
+  assert.equal(manifestBody.id, 'org.test.e2e-http-addon');
+  assert.equal(manifestBody.type, 'http');
+  assert.ok(testResult.status === 0, `dad test against a live dev server should PASS:\n${testResult.stdout}\n${testResult.stderr}`);
 });
 
 test('dad dev prints exactly ONE curl example per fixture for the /streams route, even with both direct_stream + torrent declared', async () => {
