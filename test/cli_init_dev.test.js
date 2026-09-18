@@ -56,7 +56,7 @@ test('scaffolded HTTP addon builds with tsc against the real SDK and dad dev ser
   // Point the scaffolded addon at THIS built SDK + THIS repo's typescript /
   // @types/node install instead of npm (no network access in the test sandbox).
 const nodeModulesDir = path.join(target, 'node_modules');
-  const scopeDir = path.join(nodeModulesDir, '@delulu-addons');
+  const scopeDir = path.join(nodeModulesDir, '@delulu-addon');
   const typesDir = path.join(nodeModulesDir, '@types');
 fs.mkdirSync(scopeDir, { recursive: true });
   fs.mkdirSync(typesDir, { recursive: true });
@@ -100,7 +100,7 @@ test('dad dev prints exactly ONE curl example per fixture for the /streams route
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
 const nodeModulesDir = path.join(target, 'node_modules');
-  const scopeDir = path.join(nodeModulesDir, '@delulu-addons');
+  const scopeDir = path.join(nodeModulesDir, '@delulu-addon');
   const typesDir = path.join(nodeModulesDir, '@types');
   fs.mkdirSync(scopeDir, { recursive: true });
   fs.mkdirSync(typesDir, { recursive: true });

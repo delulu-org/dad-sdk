@@ -1,10 +1,10 @@
-# @delulu-addons/dad-sdk
+# @delulu-addon/dad-sdk
 
 The **Delulu Addon Development (DAD) SDK** - build, test, and ship HTTP
 addons for Delulu.
 
 ```bash
-npm install @delulu-addons/dad-sdk
+npm install @delulu-addon/dad-sdk
 ```
 
 > **Only HTTP addons are publicly supported.** DAD addons run as a live
@@ -15,7 +15,7 @@ npm install @delulu-addons/dad-sdk
 ## Quick start
 
 ```bash
-npx @delulu-addons/dad-sdk init my-addon --name "My Addon"
+npx @delulu-addon/dad-sdk init my-addon --name "My Addon"
 cd my-addon
 npm install
 npm run build
@@ -171,7 +171,7 @@ Addon authors throw `DadError` and the SDK serializes it into that contract.
 The same codes cover the SDK's own validation failures:
 
 ```ts
-import { DadError } from '@delulu-addons/dad-sdk';
+import { DadError } from '@delulu-addon/dad-sdk';
 
 throw new DadError('unauthorized', 'Missing or invalid API key');
 throw new DadError('upstream_unreachable', 'Provider scraper timed out');
@@ -202,7 +202,7 @@ see [**Testing a live addon**](#testing-a-live-addon) below.
 ## Writing an addon
 
 ```ts
-import { defineHttpAddon, createHttpAddonHandler } from '@delulu-addons/dad-sdk';
+import { defineHttpAddon, createHttpAddonHandler } from '@delulu-addon/dad-sdk';
 import manifest from '../manifest.json' with { type: 'json' };
 
 export const addon = defineHttpAddon({
@@ -366,6 +366,6 @@ import {
   validateManifest, validateStreamItems, validateMetaResponse, validateSubtitleItems,
   isValidVersion, compareVersions, isVersionBump,
   DAD_TEST_FIXTURES,
-} from '@delulu-addons/dad-sdk';
+} from '@delulu-addon/dad-sdk';
 ```
 

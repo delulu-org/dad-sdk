@@ -1,5 +1,5 @@
 {
-  "name": "@delulu-addons/dad-sdk",
+  "name": "@delulu-addon/dad-sdk",
   "version": "1.1.0",
   "description": "Delulu Addon Development (DAD) SDK - build, test, and ship HTTP addons for Delulu",
   "type": "module",

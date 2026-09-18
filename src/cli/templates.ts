@@ -23,7 +23,7 @@ function pkgJson(addonName: string): string {
     "validate": "dad validate"
   },
   "dependencies": {
-    "@delulu-addons/dad-sdk": "^1.0.0"
+    "@delulu-addon/dad-sdk": "^1.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
@@ -85,7 +85,7 @@ export function httpAddonTemplate(id: string, name: string): TemplateFile[] {
     },
     {
       path: 'src/index.ts',
-      content: `import { defineHttpAddon, createHttpAddonHandler, DadError } from '@delulu-addons/dad-sdk';
+      content: `import { defineHttpAddon, createHttpAddonHandler, DadError } from '@delulu-addon/dad-sdk';
 import manifest from '../manifest.json' with { type: 'json' };
 
 /**
@@ -193,7 +193,7 @@ createServer(async (nodeReq, nodeRes) => {
       path: 'README.md',
       content: `# ${name}
 
-A Delulu HTTP addon, built with \`@delulu-addons/dad-sdk\`.
+A Delulu HTTP addon, built with \`@delulu-addon/dad-sdk\`.
 
 ## Develop
 
