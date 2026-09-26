@@ -32,6 +32,21 @@ test('rejects manifest with invalid capability string', () => {
   assert.ok(res.errors.some((e) => e.includes("Invalid capability 'invalid_cap'")));
 });
 
+test('rejects a manifest listing the same capability twice', () => {
+  const dup = {
+    id: 'org.delulu.dup-caps',
+    name: 'Dup Caps',
+    version: '1.0.0',
+    type: 'http',
+    baseUrl: 'https://example.com',
+    capabilities: ['direct_stream', 'direct_stream'],
+  };
+
+  const res = validateManifest(dup);
+  assert.equal(res.valid, false);
+  assert.ok(res.errors.some((e) => e.includes("Duplicate capability 'direct_stream'")));
+});
+
 test("rejects an unknown manifest type - DAD only supports HTTP addons", () => {
   const wrongType = {
     id: 'org.delulu.something',

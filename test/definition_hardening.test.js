@@ -74,8 +74,17 @@ test('http handler rejects non-numeric tmdb_id / invalid media_type / bad season
   });
   const handler = createHttpAddonHandler(addon);
 
-  const badTmdb = await handler(new Request('https://addon.example.com/streams/movie/abc'));
+const badTmdb = await handler(new Request('https://addon.example.com/streams/movie/abc'));
   assert.equal(badTmdb.status, 400);
+
+  // tmdb_id must be a POSITIVE, precision-safe integer: 0, huge digit strings
+  // and leading-zero variants are all contract violations, not valid lookups.
+  for (const id of ['0', '999999999999999999999', '007']) {
+    const r = await handler(new Request(`https://addon.example.com/streams/movie/${id}`));
+    assert.equal(r.status, 400, `tmdb_id '${id}' must be rejected`);
+    const err = await r.json();
+    assert.ok(err.error_message.includes("positive integer"), `unexpected message for '${id}': ${err.error_message}`);
+  }
 
   const badType = await handler(new Request('https://addon.example.com/streams/banana/10378'));
   assert.equal(badType.status, 400);

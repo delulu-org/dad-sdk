@@ -202,8 +202,9 @@ export function createHttpAddonHandler(addon: HttpAddonDefinition): (request: Re
       }
 
       const idSegment = segments[2];
-      if (!/^\d+$/.test(idSegment)) {
-        return `Invalid 'tmdb_id' - must be digits only (e.g. '/${route}/movie/550'), got '${idSegment}'`;
+      const numericId = Number(idSegment);
+      if (!/^[1-9]\d*$/.test(idSegment) || !Number.isSafeInteger(numericId)) {
+        return `Invalid 'tmdb_id' - must be a positive integer (e.g. '/${route}/movie/550'), got '${idSegment}'`;
       }
 
       // Movies have no seasons or episodes - reject extra segments outright
@@ -250,7 +251,7 @@ export function createHttpAddonHandler(addon: HttpAddonDefinition): (request: Re
       }
 
       return {
-        tmdb_id: parseInt(idSegment, 10),
+        tmdb_id: numericId,
         media_type: mediaTypeSegment as DadMediaType,
         s,
         e,

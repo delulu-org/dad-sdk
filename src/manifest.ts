@@ -167,9 +167,14 @@ export function validateManifest(raw: unknown): { valid: boolean; errors: string
   if (!Array.isArray(m.capabilities) || m.capabilities.length === 0) {
     errors.push("Missing or empty 'capabilities' array");
   } else {
+    const seenCaps = new Set<string>();
     for (const cap of m.capabilities) {
       if (!validCaps.includes(cap)) {
         errors.push(`Invalid capability '${cap}'. Must be one of: ${validCaps.join(', ')}`);
+      } else if (seenCaps.has(cap)) {
+        errors.push(`Duplicate capability '${cap}' - declare each capability once`);
+      } else {
+        seenCaps.add(cap);
       }
     }
   }
