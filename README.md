@@ -144,18 +144,22 @@ error message, not a runtime crash somewhere downstream.
 
 ```ts
 interface DadMetaResponse {
-  imdb_id?: string | null;       // 'tt0137523'
-  imdb_rating?: number | null;   // 8.8 - MUST be a number, not "8.8"
-  logo_url?: string | null;
-  trailer_url?: string | null;
-  trailer_sources?: Partial<Record<'2160p'|'1440p'|'1080p'|'720p'|'480p'|'360p'|'hls', string>> | null;
+  imdb_id?: string | null;    // 'tt0137523'
+  imdb_rating?: number | null; // 8.8 - MUST be a number, not "8.8"
+  trailers?: string[];         // HTTPS URLs, ordered - FIRST is the default
 }
 ```
 
 Every field is optional and nullable - Delulu Core already has poster,
-backdrop, overview, title, and cast from TMDB. Meta addons only fill in what
-TMDB doesn't have. Return `{ logo_url: '...' }` and everything else is fine
-left unset.
+backdrop, overview, title, cast, and the title logo from TMDB. Meta addons only
+fill in what TMDB doesn't carry: IMDb ID, IMDb rating, and official trailers.
+
+`trailers` is an ordered array: the first entry is the default the client
+plays. `[]`/absent/`null` all mean "no trailer". Deliver the most adaptive
+single URL you have - quality selection is the client player's job, so never
+ship per-resolution or per-format variants. Older fields (`logo_url`,
+`trailer_url`, `trailer_sources`) from pre-2.0 addons are tolerated and
+ignored.
 
 ### Errors (the DAD error model)
 

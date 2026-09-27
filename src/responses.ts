@@ -33,22 +33,13 @@ export type DadSubtitleRequest = DadRequest;
 
 // ============================================================================
 /**
- * Trailer quality keys understood by Delulu Core's player. Free-form strings
- * are NOT accepted - a trailer_sources map keyed by anything else is invalid.
- */
-export type DadTrailerQualityKey = '2160p' | '1440p' | '1080p' | '720p' | '480p' | '360p' | 'hls';
-
-/** Quality-keyed trailer source map. e.g. { "1080p": "https://...", "hls": "https://..." } */
-export type DadTrailerSources = Partial<Record<DadTrailerQualityKey, string>>;
-
-/**
  * Meta Addon Response.
- * Core app already gets poster, backdrop, overview, title, and cast from TMDB.
- * Meta addons are called strictly to enrich missing media signals:
- * transparent logo, official trailer(s), IMDb ID mapping, and IMDb rating.
+ * Core app already gets poster, backdrop, overview, title, cast, and the title
+ * logo straight from TMDB. Meta addons are called strictly to enrich the
+ * signals TMDB does not carry: IMDb ID mapping, IMDb rating, and official
+ * trailer URL(s).
  *
- * ALL fields are completely optional and nullable. If an addon only finds a logo,
- * it simply returns { logo_url: "..." }, and nothing is dropped.
+ * Every field is optional; `null` and absent both mean "unknown / not found".
  */
 export interface DadMetaResponse {
   /** Canonical IMDb ID (e.g. "tt0137523") */
@@ -62,14 +53,13 @@ export interface DadMetaResponse {
    */
   imdb_rating?: number | null;
 
-  /** Transparent title logo URL (PNG) */
-  logo_url?: string | null;
-
-  /** Primary trailer URL */
-  trailer_url?: string | null;
-
-  /** Quality-keyed trailer sources map (keys constrained to DadTrailerQualityKey) */
-  trailer_sources?: DadTrailerSources | null;
+  /**
+   * Official trailer URLs, ordered by preference - the FIRST entry is the
+   * default. HTTPS only. `[]` / absent / `null` = no trailer. Deliver the most
+   * adaptive single URL you have (the client's player handles quality
+   * selection); do NOT supply per-quality or per-format variants.
+   */
+  trailers?: string[];
 }
 
 /**
@@ -93,24 +83,16 @@ export function validateMetaResponse(raw: unknown): { valid: boolean; errors: st
       errors.push(`'imdb_rating' must be a number - normalize string ratings (e.g. parseFloat) before returning`);
     }
   }
-  for (const field of ['logo_url', 'trailer_url'] as const) {
-    if (m[field] !== undefined && m[field] !== null && typeof m[field] !== 'string') {
-      errors.push(`'${field}' must be a string`);
-    }
-  }
-  if (m.trailer_sources !== undefined && m.trailer_sources !== null) {
-    if (typeof m.trailer_sources !== 'object' || Array.isArray(m.trailer_sources)) {
-      errors.push(`'trailer_sources' must be an object map`);
+  if (m.trailers !== undefined && m.trailers !== null) {
+    if (!Array.isArray(m.trailers)) {
+      errors.push(`'trailers' must be an array of HTTPS URL strings`);
     } else {
-      const allowedKeys: DadTrailerQualityKey[] = ['2160p', '1440p', '1080p', '720p', '480p', '360p', 'hls'];
-      for (const [k, v] of Object.entries(m.trailer_sources)) {
-        if (!allowedKeys.includes(k as DadTrailerQualityKey)) {
-          errors.push(
-            `trailer_sources key '${k}' is not a recognized quality - must be one of: ${allowedKeys.join(', ')}`
-          );
-        }
-        if (typeof v !== 'string') {
-          errors.push(`trailer_sources['${k}'] must be a string`);
+      for (let i = 0; i < m.trailers.length; i++) {
+        const t = m.trailers[i];
+        if (typeof t !== 'string') {
+          errors.push(`trailers[${i}] must be a string`);
+        } else if (!isHttpsUrl(t)) {
+          errors.push(`trailers[${i}] must be an HTTPS URL`);
         }
       }
     }

@@ -7,8 +7,8 @@ test('meta: null result is valid (addon found nothing)', () => {
   assert.equal(validateMetaResponse(undefined).valid, true);
 });
 
-test('meta: accepts normalized numeric rating', () => {
-  const res = validateMetaResponse({ imdb_rating: 8.8, imdb_id: 'tt0137523', trailer_url: 'https://x/y.mp4' });
+test('meta: accepts normalized numeric rating with trailers', () => {
+  const res = validateMetaResponse({ imdb_rating: 8.8, imdb_id: 'tt0137523', trailers: ['https://x/y.mp4'] });
   assert.equal(res.valid, true, res.errors.join(', '));
 });
 
@@ -18,15 +18,38 @@ test('meta: rejects a string rating (must be normalized to number)', () => {
   assert.ok(res.errors[0].includes("'imdb_rating' must be a number"));
 });
 
-test('meta: accepts trailer_sources keyed by known quality keys', () => {
-  const res = validateMetaResponse({ trailer_sources: { '1080p': 'https://x/1080.mp4', hls: 'https://x/master.m3u8' } });
+test('meta: accepts trailers as an array of HTTPS URLs (first = default)', () => {
+  const res = validateMetaResponse({ trailers: ['https://x/a.mp4', 'https://x/b.m3u8'] });
   assert.equal(res.valid, true, res.errors.join(', '));
 });
 
-test('meta: rejects trailer_sources keyed by an unrecognized quality string', () => {
-  const res = validateMetaResponse({ trailer_sources: { garbage: 'https://x/y.mp4' } });
+test('meta: accepts empty or absent trailers as "no trailer"', () => {
+  assert.equal(validateMetaResponse({ trailers: [] }).valid, true);
+  assert.equal(validateMetaResponse({ trailers: null }).valid, true);
+  assert.equal(validateMetaResponse({}).valid, true);
+});
+
+test('meta: rejects trailers with a non-HTTPS URL', () => {
+  const res = validateMetaResponse({ trailers: ['http://x/a.mp4'] });
   assert.equal(res.valid, false);
-  assert.ok(res.errors.some((e) => e.includes("trailer_sources key 'garbage' is not a recognized quality")));
+  assert.ok(res.errors.some((e) => e.includes("trailers[0] must be an HTTPS URL")));
+});
+
+test('meta: rejects trailers with a non-string item', () => {
+  const res = validateMetaResponse({ trailers: ['https://x/a.mp4', 42] });
+  assert.equal(res.valid, false);
+  assert.ok(res.errors.some((e) => e.includes("trailers[1] must be a string")));
+});
+
+test('meta: rejects a non-array trailers value', () => {
+  const res = validateMetaResponse({ trailers: 'https://x/a.mp4' });
+  assert.equal(res.valid, false);
+  assert.ok(res.errors.some((e) => e.includes("'trailers' must be an array")));
+});
+
+test('meta: tolerates legacy fields from older addons (forward compat)', () => {
+  const res = validateMetaResponse({ logo_url: 'https://x/logo.png', trailer_url: 'https://x/y.mp4' });
+  assert.equal(res.valid, true, res.errors.join(', '));
 });
 
 test('meta: http handler returns 422 when getMeta emits a string rating', async () => {

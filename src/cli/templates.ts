@@ -144,11 +144,12 @@ export const addon = defineHttpAddon({
   },
 
   // Uncomment + declare 'meta' in manifest.json capabilities to enrich
-  // metadata the core app doesn't already have from TMDB (logo, trailer,
-  // IMDb id/rating). Return null when you found nothing for this title.
+  // metadata the core app doesn't already have from TMDB (IMDb id/rating,
+  // official trailers). Return null when you found nothing for this title.
+  // First trailer URL is the default; the client's player handles quality.
   //
   // async getMeta(req) {
-  //   return { imdb_id: 'tt1254207', imdb_rating: 6.4 }; // Big Buck Bunny
+  //   return { imdb_id: 'tt1254207', imdb_rating: 6.4, trailers: ['https://.../trailer.mp4'] };
   // },
 
   // Uncomment + declare 'subtitle' in manifest.json capabilities.
