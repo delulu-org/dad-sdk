@@ -339,6 +339,29 @@ dad test https://your-addon.example.com/manifest.json               # graceful-r
 dad test https://your-addon.example.com/manifest.json --key sk_live_abc123  # authenticated path
 ```
 
+### Name ownership (the registry guard)
+
+`dad dev` and `dad test` both check your addon id against the **DAD registry**
+before doing anything, so naming collisions never reach end users. The
+registry document is two lists:
+
+- `official` - write-blocked; only official Delulu addons may be listed here.
+- `addons` - every other registered addon, keyed by `{ id, manifestUrl }`.
+
+The guard's rules:
+
+- `org.delulu.*` is **sealed**: only addons in the `official` list may use it.
+  Anyone else gets a hard error (`dad test` exits non-zero, `dad dev` refuses
+  to serve).
+- Any id already registered to a **different** `manifestUrl` is a **collision** -
+  hard error. Registered to the **same** URL = it's your addon, allowed.
+- A free id passes.
+- If the registry is **unreachable** the guard degrades to a warning and both
+  commands keep working - it never bricks offline development.
+
+`dad init` warns if you pick a sealed namespace. Override the registry URL
+with `DAD_REGISTRY_URL` (the default is `https://delulu-addons.pages.dev/dad_registry.json`).
+
 ---
 
 ## Package layout
@@ -358,6 +381,7 @@ src/
     init.ts      dad init
     dev.ts       dad dev
     probe.ts     dad test
+    registry.ts  DAD registry id guard (sealed namespaces + dedup)
     templates.ts Scaffolding templates
 ```
 

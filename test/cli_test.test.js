@@ -8,7 +8,17 @@ import { DAD_TEST_FIXTURES } from '../dist/index.js';
 
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const run = promisify(execFile);
-const runCLI = (args, opts = {}) => run('node', [CLI, ...args], { timeout: 120000, ...opts });
+// Hermetic by default: point the registry guard at a dead port so CLI tests
+// never depend on (or slow down on) the real registry. Per-call `env` merges
+// over this default.
+const runCLI = (args, opts = {}) => {
+  const { env, ...rest } = opts;
+  return run('node', [CLI, ...args], {
+    timeout: 120000,
+    env: { ...process.env, DAD_REGISTRY_URL: 'http://127.0.0.1:1/registry.json', ...env },
+    ...rest,
+  });
+};
 
 const VALID_MANIFEST = {
   id: 'org.example.test-addon',

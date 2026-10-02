@@ -28,6 +28,7 @@ import {
 } from '../responses.js';
 import type { DadTestFixture } from '../fixtures.js';
 import { DAD_TEST_FIXTURES } from '../fixtures.js';
+import { checkAddonId, type RegistryCheck } from './registry.js';
 
 interface ProbeResult {
   route: DadRoute;
@@ -101,7 +102,11 @@ export async function testAddon(
   manifestUrl: string,
   fixtures: DadTestFixture[] = DAD_TEST_FIXTURES,
   apiKey?: string
-): Promise<{ manifest: { name: string; id: string; capabilities: DadCapability[] }; results: ProbeResult[] }> {
+): Promise<{
+  manifest: { name: string; id: string; capabilities: DadCapability[] };
+  registry: RegistryCheck;
+  results: ProbeResult[];
+}> {
   const manifestRes = await fetchJson(manifestUrl, apiKey);
   if (manifestRes.status !== 200) {
     throw new Error(
@@ -120,6 +125,14 @@ export async function testAddon(
     baseUrl: string;
     capabilities: DadCapability[];
   };
+
+  // Registry guard: a sealed or unregistered-collided id is a deployment
+  // error, so they fail the test loudly BEFORE any probing happens. An
+  // unreachable registry degrades to a warning - the addon is still tested.
+  const registry = await checkAddonId({ id: manifest.id, manifestUrl });
+  if (registry.status === 'sealed' || registry.status === 'conflict') {
+    throw new Error(registry.detail);
+  }
 
   // Probe the SAME origin the manifest came from - a DAD addon hosts both its
   // manifest and its data routes on one server, so {baseUrl}/manifest.json is
@@ -215,6 +228,7 @@ export async function testAddon(
 
   return {
     manifest: { name: manifest.name, id: manifest.id, capabilities: manifest.capabilities },
+    registry,
     results,
   };
 }
@@ -236,7 +250,7 @@ export async function runTest(manifestUrl: string, apiKey?: string): Promise<voi
     return;
   }
 
-  const { manifest, results } = out;
+  const { manifest, registry, results } = out;
   const failed = results.filter((r) => r.status === 'fail').length;
   const warned = results.filter((r) => r.status === 'warn').length;
 
@@ -244,6 +258,11 @@ export async function runTest(manifestUrl: string, apiKey?: string): Promise<voi
   console.log(` DAD test - ${manifest.name} (${manifest.id})`);
   console.log(`${'-'.repeat(60)}`);
   console.log(` Capabilities: ${manifest.capabilities.join(', ')}`);
+  if (registry.status === 'unreachable') {
+    console.log(` Registry: [warn] ${registry.detail}`);
+  } else if (registry.status !== 'ok') {
+    console.log(` Registry: ${registry.detail}`);
+  }
   console.log(apiKey ? ` Auth: sending Authorization: Bearer <key> (authenticated path)` : ` Auth: none (testing graceful-rejection path - pass --key to test as an authenticated caller)`);
 
   for (const res of results) {

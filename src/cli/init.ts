@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { httpAddonTemplate } from './templates.js';
+import { identifySealedNamespace } from './registry.js';
 
 const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/;
 
@@ -42,6 +43,14 @@ export async function runInit(
   const displayPath = path.relative(process.cwd(), targetDir) || '.';
   console.log(`\n Created http addon '${name}' in ./${displayPath}\n`);
   console.log(` Addon id:   ${id}`);
+
+  const sealed = identifySealedNamespace(id);
+  if (sealed) {
+    console.log(
+      ` WARNING: '${sealed}' is the reserved Delulu namespace - 'dad dev'/'dad test' will only allow this id if it's in the registry's official list.`
+    );
+  }
+
   console.log(` Next steps:`);
   console.log(`   cd ${dirName}`);
   console.log(`   npm install`);
