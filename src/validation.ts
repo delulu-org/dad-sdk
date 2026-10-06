@@ -27,14 +27,14 @@ export function isHttpsUrl(value: unknown): value is string {
 }
 
 /**
- * Same as `isHttpsUrl`, but also rejects a query string or fragment - for
- * fields like `baseUrl` where the value must be a bare origin+path, not
- * something carrying `?token=...` or `#fragment`.
+ * Same as `isHttpsUrl`, but also rejects a path, query string, or fragment -
+ * for fields like `baseUrl` where the value must be a bare origin, not
+ * something carrying `/addon`, `?token=...`, or `#fragment`.
  */
 export function isBareHttpsUrl(value: unknown): value is string {
   if (!isHttpsUrl(value)) return false;
   const u = new URL(value as string);
-  return u.search === '' && u.hash === '';
+  return u.pathname === '/' && u.search === '' && u.hash === '';
 }
 
 /**

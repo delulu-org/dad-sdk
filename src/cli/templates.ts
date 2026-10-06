@@ -6,6 +6,19 @@
  * This public SDK only scaffolds HTTP addons.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * The SDK's own package version, read from the published package.json (npm
+ * always ships it at the package root next to dist/). Injected into every
+ * scaffold so generated addons pin the major line they were generated from,
+ * instead of a hardcoded version that drifts from the SDK itself.
+ */
+const SDK_VERSION: string = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8')
+).version;
+
 export interface TemplateFile {
   path: string; // relative to the new addon dir
   content: string;
@@ -23,7 +36,7 @@ function pkgJson(addonName: string): string {
     "validate": "dad validate"
   },
   "dependencies": {
-    "@delulu-addon/dad-sdk": "^1.0.0"
+    "@delulu-addon/dad-sdk": "^${SDK_VERSION}"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
@@ -128,6 +141,7 @@ export const addon = defineHttpAddon({
         type: 'direct',
         title: 'Example 1080p Stream',
         stream_url: 'https://example.com/sample-1080p.mp4',
+        audio_languages: [],
         media_format: 'mp4',
         resolution: '1080p',
       },

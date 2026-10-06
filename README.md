@@ -85,6 +85,7 @@ ambiguous:
   type: 'direct',
   title: 'Server 1 1080p',
   stream_url: 'https://cdn.example.com/movie.m3u8',
+  audio_languages: [],
   media_format: 'hls',
   resolution: '1080p',
 }
@@ -95,23 +96,70 @@ ambiguous:
   type: 'direct',
   title: 'Provider A 1080p',
   stream_url: 'https://provider-a.example.com/stream.m3u8',
+  audio_languages: [],
   needs_proxy: true,
   headers: { Referer: 'https://provider-a.example.com/', 'User-Agent': 'Mozilla/5.0' },
 }
 
-// Torrent - handed to the torrent engine, not the player. No headers/proxy.
+// Torrent - handed to the torrent engine, not the player. No URL, no
+// headers/proxy: the peer swarm is the source, so a torrent has nothing to play.
 {
   type: 'torrent',
   title: 'Movie.2160p.Remux',
-  stream_url: 'magnet:?xt=urn:btih:...',
-  info_hash: '...',
+  info_hash: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', // 40-hex v1 (or 64-hex v2)
+  audio_languages: [],
+  file_idx: 0,                                        // REQUIRED - 0 for single-file
   seeders: 142,
+  trackers: ['udp://tracker.example.org:1337/announce'],
 }
 ```
+
+A torrent item is identified by `info_hash` + `file_idx`, never `stream_url` -
+emit the hash and Core builds whatever magnet/`.torrent` URL the engine wants.
+`file_idx` is required so an episode inside a season pack is never guessed at;
+`0` means single-file.
 
 Headers are **per-stream** - if you're aggregating multiple providers, each
 stream item carries its own headers. Provider A's `Referer` never leaks onto
 Provider B's URL.
+
+### Multiple audio tracks
+
+One stream item = one link. A file muxed with both English and Hindi audio is
+**one** item whose `audio_languages` lists both:
+
+```ts
+{
+  type: 'direct',
+  title: 'BluRay - 1080p',
+  stream_url: 'https://cdn.example.com/movie.mkv',
+  media_format: 'mkv',
+  audio_format: 'Dolby Atmos',
+  audio_languages: ['English', 'Hindi'],
+}
+```
+
+Do **not** emit the same `stream_url` twice as two items - they play the
+identical file and just show up twice on the shelf. Separate items are only for
+genuinely different URLs: a dubbed file, a separate audio server.
+
+`audio_languages` is a **display label**, not player input - the player reads
+the real track list off the file once it demuxes.
+
+It is also **required**. If you cannot tell what languages a source has, say so
+with an empty array:
+
+```ts
+audio_languages: []   // "I can't tell"
+```
+
+`null` and omitting the field are both rejected, so client code writes
+`item.audio_languages.map(...)` directly instead of threading `?? [] ?? null`
+through every view.
+
+The SDK checks the **shape** (an array of non-empty strings) but never the
+**content** - if you write `["Hindi"]` and the file has no Hindi, that's your
+data quality, the same boundary that applies to torrent `file_idx` ranges.
 
 Subtitles that belong to a **specific stream** (DVD subs baked into an mkv,
 a provider-only track) are embedded directly on the stream item:
@@ -121,6 +169,7 @@ a provider-only track) are embedded directly on the stream item:
   type: 'direct',
   title: 'BluRay - 1080p',
   stream_url: 'https://cdn.example.com/movie.mkv',
+  audio_languages: [],
   media_format: 'mkv',
   subtitles: [
     { id: 'en-sdh', url: 'https://cdn.example.com/en-sdh.vtt', lang_code: 'en', language: 'English', title: 'English [SDH]', format: 'vtt' },
@@ -194,12 +243,23 @@ throw new DadError('content_unavailable', 'No streams for this title');
 | `rate_limited` | 429 | Backend asking the client to slow down |
 | `internal_error` | 500 | Unexpected addon crash / catch-all |
 
-`dad test` treats any of these as a **graceful, valid answer** - a well-formed
-DAD error proves the addon speaks the contract. An unmodeled error body fails
-the probe. `validateErrorResponse` exposes the same check directly.
+`dad test` splits the model into **graceful** and **server/contract** errors:
+
+- **Graceful** (`content_unavailable`, `rate_limited`, and `unauthorized` when the
+  gate works): the addon is functioning - it spoke the contract, it just had
+  nothing or asked to slow down. These **pass** the probe.
+- **Server/contract** (`bad_request`, `method_not_allowed`, `not_found`,
+  `invalid_response`, `upstream_unreachable`, `internal_error`): the addon
+  itself is broken. `dad test` only requests routes it *declared*, with
+  well-formed valid input, so any of these is an addon bug, not an empty
+  answer - they **fail** the probe.
+
+`validateErrorResponse` exposes the same shape check directly; an unmodeled
+error body fails the probe too.
 
 One exception: `unauthorized` is only graceful when no `--key` was supplied -
-see [**Testing a live addon**](#testing-a-live-addon) below.
+see [**Testing a live addon**](#testing-a-live-addon) below. When the manifest
+declares no `apiKey` gate, `unauthorized` is a FAIL.
 
 ---
 
@@ -218,6 +278,7 @@ export const addon = defineHttpAddon({
         type: 'direct',
         title: 'Example 1080p',
         stream_url: 'https://example.com/stream.mp4',
+        audio_languages: [],
         media_format: 'mp4',
         resolution: '1080p',
       },
@@ -226,6 +287,18 @@ export const addon = defineHttpAddon({
 });
 
 export const handler = createHttpAddonHandler(addon);
+```
+
+For production hosts that use a redacting, access-controlled logger, pass an
+optional hook for unexpected programming/upstream errors. The SDK never writes
+their raw messages to the default console, because they can contain secrets:
+
+```ts
+export const handler = createHttpAddonHandler(addon, {
+  onUnexpectedError(error) {
+    logger.error({ err: error }, 'DAD addon handler failed'); // redact as appropriate
+  },
+});
 ```
 
 `handler` is a plain `(Request) => Promise<Response>` - deploy it wherever
@@ -237,10 +310,38 @@ are strict, extensionless path segments, GET only:
 GET {baseUrl}/streams/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
 GET {baseUrl}/meta/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
 GET {baseUrl}/subtitles/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
+GET {baseUrl}/manifest.json   # served by the handler itself (see below)
 ```
 
-No `.json` suffixes, no query strings - both are rejected with a `400` so a
-client can never regress into the old Stremio-style route shape.
+No `.json` suffixes (except the handler's own `/manifest.json`), no query
+strings - both are otherwise rejected with a `400`.
+
+The handler also answers `/manifest.json` and `/manifest` with the addon's own
+(built, logo-injected) manifest, so every deployment site - Workers, Deno,
+Node, Next.js - exposes install endpoint `{baseUrl}/manifest.json` with zero
+extra code, matching what `dad dev` serves locally.
+
+### `manifest.json`
+
+`dad init` prints this same field list at scaffold time, so you see it before
+you write a line of code:
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `id` | yes | Reverse-DNS id, matched case-sensitively against the catalog. Don't rename after publishing. |
+| `name` | yes | Display name in the client. |
+| `version` | yes | Strict `major.minor.patch`. The client's source of truth - the catalog's copy is only a discovery hint. |
+| `type` | yes | Always `"http"` - the only type DAD supports. |
+| `baseUrl` | yes | A bare HTTPS origin - **no path, no query string, no fragment** (`https://your-addon.example.com`). Routes live directly under it. |
+| `capabilities` | yes | Any of `meta`, `direct_stream`, `torrent`, `subtitle`. Every declared capability needs its matching handler, or `defineHttpAddon` throws. |
+| `apiKey` | no | `{ required, pageUrl }` - the install gate. See below. |
+| `description` | no | One line for the listing shelf. |
+| `publisher` | no | Your name or org. |
+| `logo` | no | HTTPS URL. **Leave it out and the SDK injects the shared default** - `https://delulu-addons.pages.dev/default_addon_logo.png` - at the define layer, so the client always has a logo to render. Set your own only if you have one; nothing is fetched or validated at build time. Override the default host-wide with `DAD_DEFAULT_LOGO_URL`. |
+
+This file is the contract: serve it at `{baseUrl}/manifest.json`, and a
+catalog lists it by URL (see [The catalog](#the-catalog)). `null`, `""`, and
+`"   "` all mean "no logo of my own" everywhere - validator and injector agree.
 
 ### API keys (the "LLM key" model)
 
@@ -257,21 +358,67 @@ A single opaque key, author-defined scope: the same shape as an OpenAI/
 Anthropic API key, and the right amount of mechanism for "one author, one
 backend, one key gating access to their own service."
 
+`required: true` is **enforced, not advisory**: `createHttpAddonHandler`
+rejects any request without a key with `401 { error: 'unauthorized' }` before
+your handler ever runs. `required: false` means the key is a bonus, and
+anonymous requests still work.
+
+---
+
+## The catalog
+
+A catalog is a **shelf, not a source of truth**. Each row is display data plus
+one pointer:
+
+```json
+{
+  "addons": [
+    {
+      "id": "org.example.my-addon",
+      "name": "My Addon",
+      "version": "1.0.0",
+      "type": "http",
+      "manifestUrl": "https://your-addon.example.com/manifest.json",
+      "description": "One line for the shelf.",
+      "publisher": "Your name",
+      "logo": "https://your-addon.example.com/logo.png"
+    }
+  ]
+}
+```
+
+At install time the client fetches `manifestUrl`, validates it with the same
+`validateManifest` you ran locally, caches it, and drives every request from
+`baseUrl` / `capabilities` / `apiKey` **as declared in the manifest**. So:
+
+- A catalog row must NOT carry `baseUrl` or `apiKey`. Those live in the
+  manifest now; a leftover copy is rejected with a migration error.
+- `version` in a row is a discovery copy so a client can show "1.0.0 available"
+  without fetching every manifest. Keep it in step with the manifest.
+- `logo` in a row is cosmetic only and may be omitted even if the manifest has
+  one.
+
+There are two catalogs with this identical shape: an **official** one the team
+hand-curates, and community/unofficial ones third parties self-publish. There
+is no `official: true` field to set - official status is derived from the
+addon's id starting with `org.delulu.` (case-insensitive), which is a namespace
+reservation rather than something a publisher can declare.
+
 ---
 
 ## Shipping an addon
 
-Deploy your server, then update `manifest.json`'s `baseUrl` to your deployed
-domain. That's the entire install payload - the addon is just a live HTTPS
-server you control.
-
-```bash
-npx dad validate   # checks manifest.json against the DAD schema
-```
+1. Deploy your server.
+2. Point `manifest.json`'s `baseUrl` at the deployed domain, and serve that same
+   file at `{baseUrl}/manifest.json`.
+3. `npx dad validate` - checks the manifest against the DAD schema.
+4. `npx dad test https://your-addon.example.com/manifest.json` - probes the
+   deployed host.
+5. Add a row pointing at your `manifestUrl` to the official catalog (open a PR)
+   or your own community catalog.
 
 HTTP addons are **not signed**: there's no downloadable artifact to protect,
-and a live server's behavior can change at any time, so a signature would
-add process without adding real security.
+and the manifest is fetched live and re-validated at install time.
 
 ---
 
@@ -286,7 +433,8 @@ dad dev [dir] [--port <n>]
 
 dad test <manifest-url> [--key <api-key>]
                         Validate a DEPLOYED addon from its public manifest:
-                        fetches {baseUrl}/manifest.json and probes every declared
+                        fetches the manifest, checks it declares the same host
+                        it is served from, then probes every declared
                         capability using public-domain fixtures (Big Buck Bunny,
                         Sintel, The Beverly Hillbillies, ...) - no copyrighted
                         titles are ever requested. --key sends
@@ -320,47 +468,36 @@ production against every capability an addon declares, so a
 
 ### Testing a live addon
 
-Without `--key`, `dad test` probes your addon with no `Authorization` header
-at all - this checks the **graceful-rejection path**: an
-`apiKey.required: true` addon should answer `401 { error: 'unauthorized' }`
-in a well-formed way, not crash or return malformed JSON. That's a genuine
-pass; nobody expects to get real content without a key.
+`dad test` fails loudly rather than waving things through - a lenient probe
+certifies a broken addon:
+
+| What it sees | Verdict |
+| --- | --- |
+| `200` + a payload that passes the production validators | pass (and it's the only way to produce "real data") |
+| A graceful DAD error (`content_unavailable`, `rate_limited`) | pass - the addon answered, it just had nothing or asked to slow down |
+| A server/contract DAD error (`internal_error`, `upstream_unreachable`, `invalid_response`, `not_found`, `bad_request`, `method_not_allowed`) | **fail** - the probe only requests declared routes with valid input, so these mean the addon itself is broken |
+| `401 unauthorized`, manifest declares an `apiKey` gate, no `--key` sent | pass - the gate is working |
+| `401 unauthorized`, **no** declared gate | **fail** - nobody could ever use this addon |
+| `401 unauthorized` after you passed `--key` | **fail** - your gate is rejecting a key that should work |
+| Bare `404`/`400` that isn't a DAD error (hosting 404 page, stale deploy, wrong route shape) | **fail** - something other than your addon is answering |
+| Every probe valid but **nothing ever returns data** | **fail** - contract-correct and useless |
+| A manifest declaring a `baseUrl` on a different host than the one serving it | **fail** when remote; a loud **warning** for `dad dev` on localhost |
+
+Without `--key`, `dad test` probes with no `Authorization` header at all -
+checking the **graceful-rejection path**. An `apiKey.required: true` addon
+should answer a well-formed `401`, not crash. That's a genuine pass, but a
+narrow one: the run says the data path went untested and tells you to re-run
+with `--key`.
 
 With `--key <api-key>` (or `DAD_TEST_API_KEY` in the environment), `dad test`
-sends that key on every probe instead - testing the **authenticated path**:
-does a real, valid key actually unlock real content? This flips the meaning
-of an `unauthorized` response: if you supplied a key and still got rejected,
-that's now a **failure** - your key gate is rejecting a key that should work
-(either the key is wrong, or the gate itself is broken; `dad test` can't tell
-those apart from the outside, but either way it's worth a second look).
+sends that key on every probe instead - testing the **authenticated path**.
+This flips the meaning of an `unauthorized` response: supplied a key and still
+rejected is now a **failure**.
 
 ```bash
 dad test https://your-addon.example.com/manifest.json               # graceful-rejection path
 dad test https://your-addon.example.com/manifest.json --key sk_live_abc123  # authenticated path
 ```
-
-### Name ownership (the registry guard)
-
-`dad dev` and `dad test` both check your addon id against the **DAD registry**
-before doing anything, so naming collisions never reach end users. The
-registry document is two lists:
-
-- `official` - write-blocked; only official Delulu addons may be listed here.
-- `addons` - every other registered addon, keyed by `{ id, manifestUrl }`.
-
-The guard's rules:
-
-- `org.delulu.*` is **sealed**: only addons in the `official` list may use it.
-  Anyone else gets a hard error (`dad test` exits non-zero, `dad dev` refuses
-  to serve).
-- Any id already registered to a **different** `manifestUrl` is a **collision** -
-  hard error. Registered to the **same** URL = it's your addon, allowed.
-- A free id passes.
-- If the registry is **unreachable** the guard degrades to a warning and both
-  commands keep working - it never bricks offline development.
-
-`dad init` warns if you pick a sealed namespace. Override the registry URL
-with `DAD_REGISTRY_URL` (the default is `https://delulu-addons.pages.dev/dad_registry.json`).
 
 ---
 
@@ -368,20 +505,19 @@ with `DAD_REGISTRY_URL` (the default is `https://delulu-addons.pages.dev/dad_reg
 
 ```
 src/
-  manifest.ts    Manifest types + validation
-  errors.ts      DAD error model (DadError, DadErrorCode, validateErrorResponse)
+  manifest.ts    Manifest types + validation (the contract)
+  errors.ts      DAD error model (DadError, DadErrorCode, DAD_ERROR_STATUS)
   validation.ts  Shared primitives (isHttpsUrl, isBareHttpsUrl, validateApiKeyShape)
   responses.ts   Request/response types + validators (meta, streams, subtitles)
   define.ts      defineHttpAddon / createHttpAddonHandler
-  version.ts     Strict semver helpers + monotonic version-bump checks
-  catalog.ts     Catalog-side helpers
+  version.ts     Strict semver format check
+  catalog.ts     Catalog schema (pointer + display rows) + validateCatalog
   fixtures.ts    Public-domain TMDB fixtures (Big Buck Bunny, Sintel, ...)
   cli.ts         `dad` CLI entrypoint
   cli/
     init.ts      dad init
     dev.ts       dad dev
     probe.ts     dad test
-    registry.ts  DAD registry id guard (sealed namespaces + dedup)
     templates.ts Scaffolding templates
 ```
 
@@ -390,9 +526,10 @@ Everything is exported from the package root:
 ```ts
 import {
   defineHttpAddon, createHttpAddonHandler,
-  DadError,
-  validateManifest, validateStreamItems, validateMetaResponse, validateSubtitleItems,
-  isValidVersion, compareVersions, isVersionBump,
+  DadError, DAD_ERROR_STATUS,
+  validateManifest, validateCatalog, isOfficialId,
+  validateStreamItems, validateMetaResponse, validateSubtitleItems,
+  isValidVersion,
   DAD_TEST_FIXTURES,
 } from '@delulu-addon/dad-sdk';
 ```

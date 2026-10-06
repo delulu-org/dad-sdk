@@ -5,7 +5,7 @@ import {
   createHttpAddonHandler,
   DadError,
   validateErrorResponse,
-  dadErrorStatus,
+  DAD_ERROR_STATUS,
 } from '../dist/index.js';
 
 test('HTTP Addon Handler routes movie streams, series streams, and CORS', async () => {
@@ -27,6 +27,7 @@ test('HTTP Addon Handler routes movie streams, series streams, and CORS', async 
           type: 'direct',
           title: '1080p Web-DL',
           stream_url: 'https://video.example.com/stream.mp4',
+          audio_languages: [],
         },
       ];
     },
@@ -34,12 +35,19 @@ test('HTTP Addon Handler routes movie streams, series streams, and CORS', async 
 
   const handler = createHttpAddonHandler(addon);
 
-  // 1. The static catalog manifest is the source of truth - this server does NOT serve one
-const manifestRes = await handler(new Request('https://addon.example.com/manifest.json'));
-  assert.equal(manifestRes.status, 400);
-  const manifestErr = await manifestRes.json();
-  assert.equal(manifestErr.error, 'bad_request');
-  assert.ok(manifestErr.error_message.includes('extensionless'), 'the .json route style is hardened away');
+// 1. The handler itself serves the addon's manifest at /manifest.json (and /manifest),
+  // matching what `dad dev` serves - {baseUrl}/manifest.json is the install contract.
+  const manifestRes = await handler(new Request('https://addon.example.com/manifest.json'));
+  assert.equal(manifestRes.status, 200);
+  const servedManifest = await manifestRes.json();
+  assert.equal(servedManifest.id, 'com.example.test-addon');
+  assert.equal(servedManifest.type, 'http');
+  assert.ok(servedManifest.logo, 'the logo injected by defineHttpAddon is served');
+
+  const mmRes = await handler(new Request('https://addon.example.com/manifest'));
+  assert.equal(mmRes.status, 200);
+  const mm = await mmRes.json();
+  assert.equal(mm.id, 'com.example.test-addon');
 
   // 2. GET /streams/movie/10378
   const movieRes = await handler(new Request('https://addon.example.com/streams/movie/10378'));
@@ -210,16 +218,33 @@ assert.equal(res.status, 400);
   assert.ok(data.error_message.includes('Bearer'));
 });
 
-test('error model: status map pairs codes to HTTP statuses', () => {
-  assert.equal(dadErrorStatus('bad_request'), 400);
-  assert.equal(dadErrorStatus('method_not_allowed'), 405);
-  assert.equal(dadErrorStatus('unauthorized'), 401);
-  assert.equal(dadErrorStatus('not_found'), 404);
-  assert.equal(dadErrorStatus('content_unavailable'), 404);
-  assert.equal(dadErrorStatus('invalid_response'), 422);
-  assert.equal(dadErrorStatus('upstream_unreachable'), 502);
-  assert.equal(dadErrorStatus('rate_limited'), 429);
-  assert.equal(dadErrorStatus('internal_error'), 500);
+test('error model: DAD_ERROR_STATUS is the single code->HTTP status table', () => {
+  assert.equal(DAD_ERROR_STATUS.bad_request, 400);
+  assert.equal(DAD_ERROR_STATUS.method_not_allowed, 405);
+  assert.equal(DAD_ERROR_STATUS.unauthorized, 401);
+  assert.equal(DAD_ERROR_STATUS.not_found, 404);
+  assert.equal(DAD_ERROR_STATUS.content_unavailable, 404);
+  assert.equal(DAD_ERROR_STATUS.invalid_response, 422);
+  assert.equal(DAD_ERROR_STATUS.upstream_unreachable, 502);
+  assert.equal(DAD_ERROR_STATUS.rate_limited, 429);
+  assert.equal(DAD_ERROR_STATUS.internal_error, 500);
+});
+
+test('error model: every code in the table is one the validator accepts', () => {
+  // The table and the validator are two halves of one contract: a code that is
+  // in DAD_ERROR_STATUS but rejected by validateErrorResponse would mean the SDK
+  // can emit a body its own validator calls invalid.
+  for (const code of Object.keys(DAD_ERROR_STATUS)) {
+    const check = validateErrorResponse({ error: code, error_message: 'x' });
+    assert.equal(check.valid, true, `'${code}' must be accepted: ${check.errors.join(', ')}`);
+  }
+});
+
+test('error model: DadError carries only the code - status comes from the table', () => {
+  const err = new DadError('rate_limited', 'slow down');
+  assert.equal(err.code, 'rate_limited');
+  assert.equal(err.status, undefined, 'DadError must not cache a second copy of the status mapping');
+  assert.equal(DAD_ERROR_STATUS[err.code], 429);
 });
 
 test('error model: validateErrorResponse accepts a valid contract body', () => {
@@ -284,7 +309,7 @@ test('http handler: a returned DadErrorResponse object serializes as-is', async 
   assert.deepEqual(data, { error: 'upstream_unreachable', error_message: 'Provider scraper timed out' });
 });
 
-test('http handler: an unknown addon throw becomes internal_error 500', async () => {
+test('http handler: an unknown addon throw becomes internal_error 500 without exposing or default-logging its message', async () => {
   const addon = defineHttpAddon({
     manifest: {
       id: 'com.example.crashes',
@@ -295,17 +320,78 @@ test('http handler: an unknown addon throw becomes internal_error 500', async ()
       capabilities: ['direct_stream'],
     },
     async getStreams() {
-      throw new Error('kaboom at scraper');
+      throw new Error('kaboom at scraper - mysql://user:hunter2@db.internal:3306/pricehistory');
+    },
+  });
+
+  const originalConsoleError = console.error;
+  const consoleCalls = [];
+  console.error = (...args) => consoleCalls.push(args);
+  const handler = createHttpAddonHandler(addon);
+  const res = await handler(new Request('https://addon.example.com/streams/movie/10378'));
+  console.error = originalConsoleError;
+  assert.equal(res.status, 500);
+  const data = await res.json();
+  assert.equal(data.error, 'internal_error');
+  assert.ok(!data.error_message.includes('kaboom'), 'raw throw message is NOT echoed to the client');
+  assert.ok(!data.error_message.includes('mysql://'), 'connection-string internals are NOT leaked');
+  assert.ok(!data.error_message.includes('logged server-side'), 'the SDK does not claim to log secret-bearing errors');
+  assert.equal(consoleCalls.length, 0, 'the default handler must not put upstream exception details in console logs');
+  assert.equal(validateErrorResponse(data).valid, true);
+});
+
+test('http handler: a host may opt in to redacted/error-controlled unexpected-error logging', async () => {
+  const expected = new Error('upstream diagnostic only');
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.observability',
+      name: 'Observability Addon',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+    },
+    async getStreams() {
+      throw expected;
+    },
+  });
+
+  const received = [];
+  const handler = createHttpAddonHandler(addon, { onUnexpectedError: (error) => received.push(error) });
+  const res = await handler(new Request('https://addon.example.com/streams/movie/10378'));
+  assert.equal(res.status, 500);
+  assert.deepEqual(received, [expected]);
+});
+
+test('http handler: non-serializable handler data becomes a contract error instead of crashing', async () => {
+  const cyclic = {
+    type: 'direct',
+    title: 'Cyclic upstream object',
+    stream_url: 'https://cdn.example.com/video.mp4',
+    audio_languages: [],
+  };
+  cyclic.self = cyclic;
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.circular',
+      name: 'Circular Addon',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+    },
+    async getStreams() {
+      return [cyclic];
     },
   });
 
   const handler = createHttpAddonHandler(addon);
   const res = await handler(new Request('https://addon.example.com/streams/movie/10378'));
-  assert.equal(res.status, 500);
-  const data = await res.json();
-  assert.equal(data.error, 'internal_error');
-  assert.ok(data.error_message.includes('kaboom at scraper'));
-  assert.equal(validateErrorResponse(data).valid, true);
+  assert.equal(res.status, 422);
+  assert.deepEqual(await res.json(), {
+    error: 'invalid_response',
+    error_message: 'Handler returned a response that cannot be serialized as JSON.',
+  });
 });
 
 test('http handler: movies reject season/episode path segments (TV-only)', async () => {
@@ -319,7 +405,7 @@ test('http handler: movies reject season/episode path segments (TV-only)', async
       capabilities: ['direct_stream'],
     },
     async getStreams() {
-      return [{ type: 'direct', title: 'x', stream_url: 'https://cdn.example.com/a.mp4' }];
+      return [{ type: 'direct', title: 'x', stream_url: 'https://cdn.example.com/a.mp4', audio_languages: [] }];
     },
   });
   const handler = createHttpAddonHandler(addon);
@@ -357,5 +443,116 @@ test('http handler: CORS only advertises the methods it actually accepts (GET, O
   const allowed = res.headers.get('Access-Control-Allow-Methods');
   assert.ok(allowed.includes('GET'));
   assert.ok(!allowed.includes('POST'), `Access-Control-Allow-Methods should not advertise POST, got '${allowed}'`);
+});
+
+test('http handler: apiKey.required is ENFORCED, not just validated', async () => {
+  // The manifest said "required: true" but nothing in the runtime checked it, so
+  // the gate was optional in practice: an anonymous request ran the handler and
+  // got the addon's data for free. Validation alone is not enforcement.
+  let handlerCalls = 0;
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.gated',
+      name: 'Gated Addon',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+      apiKey: { required: true, pageUrl: 'https://addon.example.com/keys' },
+    },
+    async getStreams(req) {
+      handlerCalls++;
+      return [{ type: 'direct', title: 'x', stream_url: 'https://cdn.example.com/a.mp4', auth: req.auth, audio_languages: [] }];
+    },
+  });
+  const handler = createHttpAddonHandler(addon);
+
+  // 1. No key at all -> 401, and the handler must never run.
+  const anonymous = await handler(new Request('https://addon.example.com/streams/movie/550'));
+  assert.equal(anonymous.status, 401);
+  const body = await anonymous.json();
+  assert.equal(body.error, 'unauthorized');
+  assert.ok(body.error_message.includes('requires an API key'), body.error_message);
+  assert.ok(body.error_message.includes('https://addon.example.com/keys'), 'should point the user at the signup page');
+  assert.equal(handlerCalls, 0, 'the gate must reject BEFORE the handler runs');
+
+  // 2. With a key -> the handler runs and receives it as req.auth.
+  const withKey = await handler(
+    new Request('https://addon.example.com/streams/movie/550', { headers: { Authorization: 'Bearer sk-live-123' } })
+  );
+  assert.equal(withKey.status, 200);
+  assert.equal(handlerCalls, 1);
+});
+
+test('http handler: an apiKey gate that is NOT required stays optional', async () => {
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.optional-gate',
+      name: 'Optional Gate',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+      apiKey: { required: false, pageUrl: 'https://addon.example.com/keys' },
+    },
+    async getStreams() {
+      return [{ type: 'direct', title: 'x', stream_url: 'https://cdn.example.com/a.mp4', audio_languages: [] }];
+    },
+  });
+  const handler = createHttpAddonHandler(addon);
+  const anonymous = await handler(new Request('https://addon.example.com/streams/movie/550'));
+  assert.equal(anonymous.status, 200, 'required:false must not start rejecting anonymous requests');
+});
+
+test('http handler: a malformed error object is reported as such, not misread as data', async () => {
+  // Returning { error: 'server_unreachable' } (not in the vocabulary, and the
+  // message key was wrong too) used to fail the "is this an error?" shape check,
+  // fall through to the stream validator, and come back as 422 complaining about
+  // a malformed STREAM - hiding the actual bug from the addon author.
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.bad-error',
+      name: 'Bad Error Addon',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+    },
+    async getStreams() {
+      return { error: 'server_unreachable', message: 'oops' };
+    },
+  });
+
+  const handler = createHttpAddonHandler(addon);
+  const res = await handler(new Request('https://addon.example.com/streams/movie/550'));
+  assert.equal(res.status, 422);
+  const data = await res.json();
+  assert.ok(
+    data.error_message.includes("not a valid DAD error response"),
+    `expected the malformed-error explanation, got: ${data.error_message}`
+  );
+  assert.ok(data.error_message.includes('server_unreachable'), 'should quote the offending code');
+  assert.ok(data.error_message.includes('DadError'), 'should say how to fix it');
+});
+
+test('http handler: a well-formed error object still passes through untouched', async () => {
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.good-error',
+      name: 'Good Error Addon',
+      version: '1.0.0',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['meta'],
+    },
+    async getMeta() {
+      return { error: 'content_unavailable', error_message: 'no trailers for this title' };
+    },
+  });
+  const handler = createHttpAddonHandler(addon);
+  const res = await handler(new Request('https://addon.example.com/meta/movie/550'));
+  assert.equal(res.status, 404);
+  const data = await res.json();
+  assert.deepEqual(data, { error: 'content_unavailable', error_message: 'no trailers for this title' });
 });
 

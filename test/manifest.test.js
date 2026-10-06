@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateManifest, isHttpManifest } from '../dist/index.js';
+import { validateManifest, withDefaultLogo, DAD_DEFAULT_LOGO_URL } from '../dist/index.js';
 
 test('validates a compliant HTTP DAD Manifest (e.g. Cinemeta)', () => {
   const cinemetaHttpManifest = {
@@ -9,12 +9,11 @@ test('validates a compliant HTTP DAD Manifest (e.g. Cinemeta)', () => {
     version: '1.0.0',
     type: 'http',
     capabilities: ['meta'],
-    baseUrl: 'https://v3-cinemeta.strem.io/dad',
+    baseUrl: 'https://v3-cinemeta.strem.io',
   };
 
   const res = validateManifest(cinemetaHttpManifest);
   assert.equal(res.valid, true, `Validation failed: ${res.errors.join(', ')}`);
-  assert.equal(isHttpManifest(cinemetaHttpManifest), true);
 });
 
 test('rejects manifest with invalid capability string', () => {
@@ -72,7 +71,7 @@ test('validates an http addon with an apiKey (OpenAI-style single key)', () => {
     name: 'Premium Streams',
     version: '1.0.0',
     type: 'http',
-    baseUrl: 'https://premium.example.com/dad',
+    baseUrl: 'https://premium.example.com',
     capabilities: ['direct_stream'],
     apiKey: { required: true, pageUrl: 'https://premium.example.com/signup' },
   };
@@ -80,7 +79,7 @@ test('validates an http addon with an apiKey (OpenAI-style single key)', () => {
   assert.equal(res.valid, true, `Validation failed: ${res.errors.join(', ')}`);
 });
 
-test('rejects an http manifest whose baseUrl is not HTTPS or carries a query string', () => {
+test('rejects an http manifest whose baseUrl is not HTTPS, carries a query string, or has a path', () => {
   const tooWeakUrl = {
     id: 'bad-url',
     name: 'Bad URL',
@@ -99,7 +98,20 @@ test('rejects an http manifest whose baseUrl is not HTTPS or carries a query str
     baseUrl: 'https://addon.example.com?token=x',
     capabilities: ['meta'],
   };
-  assert.equal(validateManifest(queryCarried).valid, false);
+  const queryRes = validateManifest(queryCarried);
+  assert.equal(queryRes.valid, false);
+
+  const pathCarried = {
+    id: 'bad-url',
+    name: 'Bad URL',
+    version: '1.0.0',
+    type: 'http',
+    baseUrl: 'https://addon.example.com/dad',
+    capabilities: ['meta'],
+  };
+  const pathRes = validateManifest(pathCarried);
+  assert.equal(pathRes.valid, false);
+  assert.ok(pathRes.errors.some((e) => e.includes('no path')), 'error message mentions the path rule');
 });
 
 test('rejects http manifest with invalid apiKey (non-https pageUrl, bad types)', () => {
@@ -114,7 +126,7 @@ test('rejects http manifest with invalid apiKey (non-https pageUrl, bad types)',
       name: 'Premium',
       version: '1.0.0',
       type: 'http',
-      baseUrl: 'https://premium.example.com/dad',
+      baseUrl: 'https://premium.example.com',
       capabilities: ['direct_stream'],
       apiKey,
     };
@@ -212,4 +224,48 @@ test('manifest logo must be HTTPS if present - matches the catalog logo requirem
   assert.equal(validateManifest({ ...base, logo: 'not-a-url' }).valid, false);
   assert.equal(validateManifest({ ...base, logo: 'https://example.com/logo.png' }).valid, true);
   assert.equal(validateManifest(base).valid, true, 'logo is optional - omitting it is fine');
+});
+
+test('"no logo" means the same thing to validateManifest and withDefaultLogo', () => {
+  // The two used to disagree: withDefaultLogo treated null / '' / whitespace as
+  // "unset" and injected the DAD default, while validateManifest REJECTED '' and
+  // whitespace - so a developer who wrote "logo": "" got a hard validation error
+  // for the exact value the SDK would have happily defaulted.
+  const base = {
+    id: 'org.example.logo-unset',
+    name: 'Logo Unset',
+    version: '1.0.0',
+    type: 'http',
+    baseUrl: 'https://logo-unset.example.com',
+    capabilities: ['meta'],
+  };
+  const unsetForms = [undefined, null, '', '   '];
+
+  for (const logo of unsetForms) {
+    const manifest = { ...base, logo };
+    const res = validateManifest(manifest);
+    assert.equal(res.valid, true, `logo ${JSON.stringify(logo)} must be treated as unset: ${res.errors.join(', ')}`);
+    assert.equal(
+      withDefaultLogo(manifest).logo,
+      DAD_DEFAULT_LOGO_URL,
+      `logo ${JSON.stringify(logo)} must fall back to the DAD default`
+    );
+  }
+
+  // A real value is left completely alone.
+  assert.equal(withDefaultLogo({ ...base, logo: 'https://example.com/logo.png' }).logo, 'https://example.com/logo.png');
+});
+
+test('a non-string logo is rejected with exactly ONE clear error', () => {
+  const base = {
+    id: 'org.example.logo-type',
+    name: 'Logo Type',
+    version: '1.0.0',
+    type: 'http',
+    baseUrl: 'https://logo-type.example.com',
+    capabilities: ['meta'],
+  };
+  const res = validateManifest({ ...base, logo: 12345 });
+  assert.equal(res.valid, false);
+  assert.equal(res.errors.length, 1, `expected exactly 1 error, got: ${JSON.stringify(res.errors)}`);
 });

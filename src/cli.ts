@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateSourceManifest } from './manifest.js';
+import { validateManifest } from './manifest.js';
+import { sealCatalog } from './catalog.js';
 import { runInit } from './cli/init.js';
 import { runDev } from './cli/dev.js';
 import { runTest } from './cli/probe.js';
@@ -17,7 +18,7 @@ async function runValidate(targetDir: string = process.cwd()) {
 
   try {
     const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    const result = validateSourceManifest(raw);
+    const result = validateManifest(raw);
     if (result.valid) {
       console.log(` manifest.json is valid!`);
     } else {
@@ -31,6 +32,38 @@ async function runValidate(targetDir: string = process.cwd()) {
     console.error(` Invalid JSON: ${e.message}`);
     process.exit(1);
   }
+}
+
+/**
+ * `dad catalog check` - validates a catalog file and applies the namespace seal.
+ *
+ * Kept separate from `dad validate`: `validate` answers "is this file
+ * well-formed"; this also answers "is this entry allowed to claim the team id
+ * space".
+ */
+async function runCatalogCheck(catalogPath: string) {
+  let local: unknown;
+  try {
+    local = /^https?:\/\//i.test(catalogPath)
+      ? await (await fetch(catalogPath)).json()
+      : JSON.parse(fs.readFileSync(catalogPath, 'utf-8'));
+  } catch (e: any) {
+    console.error(` Error: could not read ${catalogPath} - ${e.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = sealCatalog(local);
+
+  if (result.valid) {
+    const count = (local as { addons: unknown[] }).addons.length;
+    console.log(` Catalog is valid and publishable (${count} addon(s)).`);
+    return;
+  }
+
+  console.error(` Publishing blocked - ${result.errors.length} error(s):`);
+  for (const err of result.errors) console.error(`   - ${err}`);
+  process.exitCode = 1;
 }
 
 /** Parses `--flag value` / `--flag=value` pairs out of an argv-like array (positional args already stripped). */
@@ -80,6 +113,23 @@ async function main() {
     case 'validate':
       await runValidate(positional[0] ? path.resolve(positional[0]) : process.cwd());
       break;
+    case 'catalog':
+      if (positional[0] !== 'check') {
+        console.error(` Error: unknown 'dad catalog' subcommand${positional[0] ? ` '${positional[0]}'` : ''}.`);
+        console.error(` Usage: dad catalog check <file>`);
+        process.exitCode = 1;
+        break;
+      }
+      if (!positional[1]) {
+        console.error(` Error: 'dad catalog check' requires a catalog file path or URL.`);
+        console.error(` Usage: dad catalog check <file.json>`);
+        process.exitCode = 1;
+        break;
+      }
+      // Only resolve paths - path.resolve() would mangle a URL.
+      const catalogArg = positional[1];
+      await runCatalogCheck(/^https?:\/\//i.test(catalogArg) ? catalogArg : path.resolve(catalogArg));
+      break;
     case 'init':
       await runInit(positional[0], { id: flags.id, name: flags.name });
       break;
@@ -95,9 +145,8 @@ async function main() {
         process.exitCode = 1;
         break;
       }
-      // --key wins if given explicitly; DAD_TEST_API_KEY is the safer
-      // default for CI/shell use (argv shows up in `ps`/shell history/logs;
-      // an env var doesn't).
+      // --key wins if given explicitly; DAD_TEST_API_KEY is the safer default
+      // for CI/shell use (argv shows up in shell history/logs).
       await runTest(positional[0], flags.key ?? process.env.DAD_TEST_API_KEY);
       break;
     case 'help':
@@ -121,15 +170,29 @@ Testing a live addon:
                          fetches {baseUrl}/manifest.json and probes every declared
                          capability using public-domain fixtures (Big Buck Bunny,
                          Sintel, ...) - the exact request shapes Delulu Core sends.
-                         [--key <api-key>]  Test the AUTHENTICATED path - sends
-                         Authorization: Bearer <api-key> on every probe. Without
-                         it, only the graceful-rejection path is tested (no key
-                         given -> unauthorized is expected and passes; WITH --key,
-                         an unauthorized response means the key gate is broken).
-                         (or set DAD_TEST_API_KEY - safer for CI/shell history)
+[--key <api-key>]  Test the AUTHENTICATED path - sends
+                          Authorization: Bearer <api-key> on every probe. Without
+                          it, only the graceful-rejection path is tested (no key
+                          given -> unauthorized is expected and passes; WITH --key,
+                          an unauthorized response means the key gate is broken).
+                          Only content_unavailable/rate_limited errors pass a
+                          probe; internal_error, upstream_unreachable,
+                          invalid_response, not_found, bad_request and
+                          method_not_allowed FAIL it - they mean the addon
+                          itself is broken.
+                          (or set DAD_TEST_API_KEY - safer for CI/shell history)
 
 Shipping:
   dad validate [dir]     Validate manifest.json schema
+
+Publishing a catalog:
+  dad catalog check <file.json>
+                         Check a catalog before publishing it. Validates the
+                         file and enforces the namespace seal: an id under
+                         'org.delulu.' requires publisher 'delulu', and
+                         publisher 'delulu' requires an 'org.delulu.' id, so
+                         team branding cannot appear on a non-team addon.
+                         Accepts a path or a URL.
 
   dad help                Show this help message
 `);

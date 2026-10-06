@@ -11,7 +11,7 @@
  * server unreachable, title not found, ...) without parsing free-form text.
  *
  * - The SDK handler converts every internal failure into this shape.
- * - Addon authors `throw new DadError('server_unreachable', 'scraper timed out')`
+ * - Addon authors `throw new DadError('upstream_unreachable', 'scraper timed out')`
  *   (or return the plain object) to speak the same contract.
  * - `validateErrorResponse` rejects anything not in the vocabulary.
  */
@@ -52,23 +52,19 @@ export const DAD_ERROR_STATUS: Record<DadErrorCode, number> = {
 
 /**
  * Thrown by addons (or the SDK) to produce a contract-conformant error
- * response. Carries the machine code and the HTTP status the handler emits.
+ * response. Carries ONLY the machine code - the HTTP status is derived from
+ * `DAD_ERROR_STATUS`, which is the single source of truth for code<->status.
+ * (This class used to also cache a `status` field, i.e. a second copy of that
+ * mapping that could silently drift from the table.)
  */
 export class DadError extends Error {
   readonly code: DadErrorCode;
-  readonly status: number;
 
   constructor(code: DadErrorCode, error_message: string) {
     super(error_message);
     this.name = 'DadError';
     this.code = code;
-    this.status = DAD_ERROR_STATUS[code];
   }
-}
-
-/** Map any error code to its HTTP status. */
-export function dadErrorStatus(code: DadErrorCode): number {
-  return DAD_ERROR_STATUS[code];
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -99,7 +95,23 @@ export function validateErrorResponse(raw: unknown): { valid: boolean; errors: s
   return { valid: errors.length === 0, errors };
 }
 
-/** True when the value looks like a DAD error response (any known code). */
+/** True when the value is a DAD error response with a KNOWN code. */
 export function isErrorResponse(raw: unknown): raw is DadErrorResponse {
   return isPlainObject(raw) && typeof raw.error === 'string' && raw.error in DAD_ERROR_STATUS;
+}
+
+/**
+ * True when the value merely LOOKS like an error payload - a plain object with
+ * a string `error` field - regardless of whether the code and message are
+ * valid.
+ *
+ * This exists so a handler that TRIED to return an error but got the shape
+ * wrong (a typo'd code like `'server_unreachable'`, a missing `error_message`,
+ * a serialized `Error`) can be reported as exactly that, instead of being
+ * misread as a successful data payload and answered with a 422 about its own
+ * error object. Note that `isErrorResponse` alone cannot catch this: an unknown
+ * code fails its check by design.
+ */
+export function looksLikeErrorPayload(raw: unknown): boolean {
+  return isPlainObject(raw) && typeof raw.error === 'string';
 }

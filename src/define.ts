@@ -1,13 +1,10 @@
-import { HttpDadManifest, DadCapability, validateSourceManifest, withDefaultLogo } from './manifest.js';
-import { DadError, DadErrorCode, DAD_ERROR_STATUS, isErrorResponse, validateErrorResponse } from './errors.js';
+import { HttpDadManifest, DadCapability, validateManifest, withDefaultLogo } from './manifest.js';
+import { DadError, DadErrorCode, DAD_ERROR_STATUS, isErrorResponse, looksLikeErrorPayload, validateErrorResponse } from './errors.js';
 import {
-  DadMetaRequest,
+  DadRequest,
   DadMetaResponse,
-  DadStreamRequest,
   DadStreamItem,
-  DadSubtitleRequest,
   DadSubtitleItem,
-  DadMediaType,
   validateMetaResponse,
   validateStreamItems,
   validateSubtitleItems,
@@ -16,17 +13,27 @@ import {
 
 export interface DadAddonHandlers {
   /** Handler called when Delulu Core requests metadata (if 'meta' capability declared) */
-  getMeta?: (req: DadMetaRequest) => Promise<DadMetaResponse | null>;
+  getMeta?: (req: DadRequest) => Promise<DadMetaResponse | null>;
 
   /** Handler called when Delulu Core requests streams (if 'direct_stream' or 'torrent' capability declared) */
-  getStreams?: (req: DadStreamRequest) => Promise<DadStreamItem[]>;
+  getStreams?: (req: DadRequest) => Promise<DadStreamItem[]>;
 
   /** Handler called when Delulu Core requests subtitles (if 'subtitle' capability declared) */
-  getSubtitles?: (req: DadSubtitleRequest) => Promise<DadSubtitleItem[]>;
+  getSubtitles?: (req: DadRequest) => Promise<DadSubtitleItem[]>;
 }
 
 export interface HttpAddonDefinition extends DadAddonHandlers {
   manifest: HttpDadManifest;
+}
+
+/**
+ * Optional operational hooks for the HTTP adapter. The default deliberately
+ * logs no exception details: upstream errors regularly contain credentials,
+ * tokens, or internal URLs. Applications that have a redacting, access-
+ * controlled logger can opt in to receiving the original error here.
+ */
+export interface HttpAddonHandlerOptions {
+  onUnexpectedError?: (error: unknown) => void;
 }
 
 /**
@@ -48,7 +55,7 @@ const CAPABILITY_HANDLERS: Record<DadCapability, keyof DadAddonHandlers> = {
  * Catches misconfigured addons before they ever reach Delulu Core.
  */
 function assertAddonDefinition(def: HttpAddonDefinition): void {
-  const manifestCheck = validateSourceManifest(def.manifest);
+  const manifestCheck = validateManifest(def.manifest);
   if (!manifestCheck.valid) {
     throw new TypeError(
       `DAD addon '${def.manifest.id}' has an invalid manifest: ${manifestCheck.errors.join('; ')}`
@@ -74,9 +81,12 @@ function assertAddonDefinition(def: HttpAddonDefinition): void {
   );
   for (const h of implementedHandlers) {
     if (!capabilitiesByHandler.has(h)) {
-      const cap = Object.keys(CAPABILITY_HANDLERS).find((c) => CAPABILITY_HANDLERS[c as DadCapability] === h);
+      const candidates = (Object.keys(CAPABILITY_HANDLERS) as DadCapability[]).filter(
+        (c) => CAPABILITY_HANDLERS[c] === h
+      );
       throw new TypeError(
-        `DAD addon '${def.manifest.id}' implements handler '${h}' but does not declare the matching capability '${cap}'.`
+        `DAD addon '${def.manifest.id}' implements handler '${h}' but does not declare the matching capability. ` +
+          `Declare one of: ${candidates.map((c) => `'${c}'`).join(', ')}.`
       );
     }
   }
@@ -91,15 +101,6 @@ export function defineHttpAddon(def: HttpAddonDefinition): HttpAddonDefinition {
   const normalized = { ...def, manifest: withDefaultLogo(def.manifest) };
   assertAddonDefinition(normalized);
   return normalized;
-}
-
-/**
- * Alias of `defineHttpAddon`. DAD currently supports only HTTP addons -
- * kept as a separate export so call sites that prefer the generic name
- * don't need to change if a second addon type is ever added back.
- */
-export function defineAddon(def: HttpAddonDefinition): HttpAddonDefinition {
-  return defineHttpAddon(def);
 }
 
 const CORS_HEADERS = {
@@ -120,39 +121,80 @@ function errorResponse(code: DadErrorCode, error_message: string): Response {
   return jsonResponse({ error: code, error_message }, DAD_ERROR_STATUS[code]);
 }
 
-function toErrorResponse(e: unknown): Response {
+function toErrorResponse(e: unknown, onUnexpectedError?: (error: unknown) => void): Response {
   if (e instanceof DadError) {
     return errorResponse(e.code, e.message);
   }
-  if (typeof e === 'string') {
-    return errorResponse('internal_error', e);
+  // Anything that is not an explicit DadError is an unexpected bug. Do not
+  // write its message to the default log: connection strings, API tokens, and
+  // internal URLs often appear there. Hosts with a redacting logger can opt in
+  // through onUnexpectedError.
+  try {
+    onUnexpectedError?.(e);
+  } catch {
+    // Observability must never turn an already-failed request into a crash.
   }
-  const message = e instanceof Error ? e.message : String(e);
-  return errorResponse('internal_error', message);
+  return errorResponse('internal_error', 'Internal addon error.');
+}
+
+/** Serialize an addon-controlled value without allowing a cyclic/BigInt/etc.
+ * value to escape the adapter as an unhandled exception. */
+function handlerJsonResponse(data: unknown, status = 200): Response {
+  try {
+    return jsonResponse(data, status);
+  } catch {
+    return errorResponse('invalid_response', 'Handler returned a response that cannot be serialized as JSON.');
+  }
+}
+
+/**
+ * If a handler returned something shaped like a DAD error, answer it as one.
+ *
+ * A valid `{ error, error_message }` object passes through with its own status;
+ * a malformed one is reported as `invalid_response` naming what went wrong
+ * instead of falling through to the success validator.
+ *
+ * Returns null when the payload isn't error-shaped at all (the normal case).
+ */
+function errorOrMalformedError(raw: unknown): Response | null {
+  if (isErrorResponse(raw)) {
+    return handlerJsonResponse(raw, DAD_ERROR_STATUS[raw.error]);
+  }
+  if (!looksLikeErrorPayload(raw)) return null;
+  const check = validateErrorResponse(raw);
+  return errorResponse(
+    'invalid_response',
+    `Handler returned an object with an 'error' field that is not a valid DAD error response: ${check.errors.join(
+      ' '
+    )}. Return a well-formed { error, error_message } pair, or throw DadError instead.`
+  );
 }
 
 /**
  * Standard HTTP Request Router for HTTP DAD Addons.
  * Compatible with Cloudflare Workers, Node.js (via native fetch / Web Standard Request), Bun, Deno, Fastify, and Next.js.
  *
- * The addon's catalog entry is the source of truth: the entry itself holds
- * `baseUrl` (+ optional `apiKey` gate) and that is everything - HTTP addons
- * are UNSIGNED by design (no artifact to protect); this server only serves data.
+ * The addon's OWN `manifest.json` is the contract: it declares `baseUrl`,
+ * `capabilities`, and the optional `apiKey` gate. HTTP addons are UNSIGNED by
+ * design (no artifact to protect); this server only serves data.
  * HARDENED extensionless, path-segment routes (Strictly GET):
  * - GET /streams/{media_type}/{tmdb_id}[/{season}[/{episode}]]  -> Resolves streams
  * - GET /meta/{media_type}/{tmdb_id}[/{season}[/{episode}]]    -> Resolves meta (per-season trailers!)
  * - GET /subtitles/{media_type}/{tmdb_id}[/{season}[/{episode}]] -> Resolves subtitles (per-episode)
  * - OPTIONS *                                                   -> CORS preflight
  *
- * Path URLs are the ONLY accepted shape. The old Stremio-style `.../meta/movie/tt0137523.json`
- * suffix and query-string routes (`?tmdb_id=`/`?media_type=`) are rejected with a 400 so
- * clients can never regress to them.
+ * Path URLs are the only accepted shape: extensionless path segments, no
+ * `.../meta/movie/tt0137523.json` suffix, no query-string routes.
  *
  * API keys arrive as `Authorization: Bearer <key>` on every request and are
- * injected into the request as `auth`. If present, missing/invalid and - after
- * the addon's backend decides what the key unlocks - a 401 is returned as-is.
+ * injected into the request as `auth`. If the manifest sets `apiKey.required`,
+ * a request WITHOUT a key is rejected 401 before any handler runs; otherwise
+ * the key is optional and a bad key is a 401 the backend decides to raise.
  */
-export function createHttpAddonHandler(addon: HttpAddonDefinition): (request: Request) => Promise<Response> {
+export function createHttpAddonHandler(
+  addon: HttpAddonDefinition,
+  options: HttpAddonHandlerOptions = {}
+): (request: Request) => Promise<Response> {
   return async function handleRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
@@ -167,13 +209,20 @@ export function createHttpAddonHandler(addon: HttpAddonDefinition): (request: Re
     }
 
     const pathname = url.pathname.replace(/\/+$/, '');
+
+    // The addon's OWN manifest is part of its HTTP contract: install/discovery
+    // and `dad test` fetch it at `{baseUrl}/manifest.json`. Serve the validated,
+    // logo-injected manifest here so every deployment (Workers, Node, Deno, ...)
+    // exposes it with zero extra code - matching what `dad dev` already served.
+    if (pathname === '/manifest.json' || pathname === '/manifest') {
+      return handlerJsonResponse(addon.manifest);
+    }
+
     const segments = pathname.split('/').filter(Boolean);
     const route = segments[0] as string | undefined;
 
-    // HARDENED: DAD HTTP routes are extensionless path-segment URLs. ANY `.` in
-    // the path is rejected loudly (400) - the old Stremio-style
-    // `.../meta/movie/tt0137523.json` suffix (or any file extension) must never
-    // sneak back into clients.
+    // DAD data routes are extensionless - any file extension is a 400. The
+    // one exception is the addon's own `/manifest.json`, served above.
     if (pathname.includes('.')) {
       return errorResponse(
         'bad_request',
@@ -193,140 +242,161 @@ export function createHttpAddonHandler(addon: HttpAddonDefinition): (request: Re
       );
     }
 
-    // Parse + strictly validate the path segments into a DadRequest.
-    // Returns an error message string on invalid input (handled as a 400).
-    function parsePathRequest(): DadMetaRequest | string {
+    // Result object rather than a `DadRequest | string` union: both branches
+    // hold strings, so a message can never be mistaken for a parsed request.
+    type ParseOutcome = { ok: true; request: DadRequest } | { ok: false; error: string };
+
+    function parsePathRequest(): ParseOutcome {
+      const fail = (error: string): ParseOutcome => ({ ok: false, error });
+
       const mediaTypeSegment = segments[1];
       if (mediaTypeSegment !== 'movie' && mediaTypeSegment !== 'tv') {
-        return `Invalid 'media_type' - must be 'movie' or 'tv' (got '${mediaTypeSegment}')`;
+        return fail(`Invalid 'media_type' - must be 'movie' or 'tv' (got '${mediaTypeSegment}')`);
       }
 
       const idSegment = segments[2];
       const numericId = Number(idSegment);
       if (!/^[1-9]\d*$/.test(idSegment) || !Number.isSafeInteger(numericId)) {
-        return `Invalid 'tmdb_id' - must be a positive integer (e.g. '/${route}/movie/550'), got '${idSegment}'`;
+        return fail(`Invalid 'tmdb_id' - must be a positive integer (e.g. '/${route}/movie/550'), got '${idSegment}'`);
       }
 
       // Movies have no seasons or episodes - reject extra segments outright
       // rather than silently parsing and forwarding s/e to the handler.
       if (mediaTypeSegment === 'movie' && segments.length > 3) {
-        return `'season'/'episode' segments are TV-only - got '/${route}/movie/${idSegment}/${segments.slice(3).join('/')}'. Use '/${route}/movie/${idSegment}' instead.`;
+        return fail(
+          `'season'/'episode' segments are TV-only - got '/${route}/movie/${idSegment}/${segments
+            .slice(3)
+            .join('/')}'. Use '/${route}/movie/${idSegment}' instead.`
+        );
       }
 
       let s: number | undefined;
       let e: number | undefined;
 
-      // Season/episode segments are OPTIONAL on every route - TV shows have
-      // per-season trailers (meta) and per-episode subtitles, so the same
-      // hierarchical shape applies to streams, meta, and subtitles alike:
+      // Season/episode segments are optional on every route:
       //   3 segments -> movie / season-agnostic TV show
       //   4 segments -> season only   (e.g. /meta/tv/{tmdb_id}/{season})
       //   5 segments -> season+episode (e.g. /subtitles/tv/{tmdb_id}/{season}/{episode})
       if (segments.length > 5) {
-        return `Malformed DAD request - too many segments. Max is '/${route}/{media_type}/{tmdb_id}/{season}/{episode}'`;
+        return fail(`Malformed DAD request - too many segments. Max is '/${route}/{media_type}/{tmdb_id}/{season}/{episode}'`);
       }
       if (segments.length >= 4) {
         if (!/^\d+$/.test(segments[3])) {
-          return "Invalid 's' (season) - must be an integer";
+          return fail("Invalid 's' (season) - must be an integer");
         }
         s = parseInt(segments[3], 10);
       }
       if (segments.length === 5) {
         if (!/^\d+$/.test(segments[4])) {
-          return "Invalid 'e' (episode) - must be an integer";
+          return fail("Invalid 'e' (episode) - must be an integer");
         }
         e = parseInt(segments[4], 10);
       }
 
-      // Single API key delivery (OpenAI-style): `Authorization: Bearer <key>`.
-      // Present on every request the client makes when it holds a key for this addon.
       const authHeader = request.headers.get('authorization');
       let auth: string | undefined;
       if (authHeader) {
         const match = /^Bearer\s+(\S+)$/i.exec(authHeader);
         if (!match) {
-          return "Invalid 'Authorization' header - must be 'Bearer <apiKey>'";
+          return fail("Invalid 'Authorization' header - must be 'Bearer <apiKey>'");
         }
         auth = match[1];
       }
 
       return {
-        tmdb_id: numericId,
-        media_type: mediaTypeSegment as DadMediaType,
-        s,
-        e,
-        auth,
+        ok: true,
+        request: {
+          tmdb_id: numericId,
+          media_type: mediaTypeSegment as DadRequest['media_type'],
+          s,
+          e,
+          auth,
+        },
       };
     }
 
-    const req = parsePathRequest();
-    if (typeof req === 'string') {
-      return errorResponse('bad_request', req);
+    const parsed = parsePathRequest();
+    if (!parsed.ok) {
+      return errorResponse('bad_request', parsed.error);
+    }
+    const req = parsed.request;
+
+    // Enforce a declared `apiKey.required` gate before any handler runs.
+    if (addon.manifest.apiKey?.required === true && req.auth === undefined) {
+      return errorResponse(
+        'unauthorized',
+        `This addon requires an API key${
+          addon.manifest.apiKey.pageUrl ? ` - get one at ${addon.manifest.apiKey.pageUrl}` : ''
+        }.`
+      );
     }
 
     // 3. Streams Endpoint (/streams/{media_type}/{tmdb_id}[/{season}[/{episode}]])
     if (route === 'streams') {
       if (!addon.getStreams) {
-        return errorResponse('not_found', 'Addon does not declare the streams capability');
+        return errorResponse(
+          'not_found',
+          `Addon '${addon.manifest.id}' does not declare 'direct_stream' or 'torrent' - no streams capability to serve.`
+        );
       }
       let raw: unknown;
       try {
         raw = (await addon.getStreams(req)) ?? [];
       } catch (e: unknown) {
-        return toErrorResponse(e);
+        return toErrorResponse(e, options.onUnexpectedError);
       }
-      if (isErrorResponse(raw) && validateErrorResponse(raw).valid) {
-        return jsonResponse(raw, DAD_ERROR_STATUS[raw.error]);
-      }
+      const errored = errorOrMalformedError(raw);
+      if (errored) return errored;
       const streamCheck = validateStreamItems(raw, {
         allowedTypes: allowedStreamTypesForCapabilities(addon.manifest.capabilities),
       });
       if (!streamCheck.valid) {
         return errorResponse('invalid_response', `Invalid stream response: ${streamCheck.errors.join(' ')}`);
       }
-      return jsonResponse(raw);
+      return handlerJsonResponse(raw);
     }
 
     // 4. Meta Endpoint (/meta/{media_type}/{tmdb_id})
     if (route === 'meta') {
       if (!addon.getMeta) {
-        return errorResponse('not_found', 'Addon does not declare the meta capability');
+        return errorResponse('not_found', `Addon '${addon.manifest.id}' does not declare the 'meta' capability.`);
       }
       let raw: unknown;
       try {
         raw = (await addon.getMeta(req)) ?? null;
       } catch (e: unknown) {
-        return toErrorResponse(e);
+        return toErrorResponse(e, options.onUnexpectedError);
       }
-      if (isErrorResponse(raw) && validateErrorResponse(raw).valid) {
-        return jsonResponse(raw, DAD_ERROR_STATUS[raw.error]);
-      }
+      const errored = errorOrMalformedError(raw);
+      if (errored) return errored;
       const metaCheck = validateMetaResponse(raw);
       if (!metaCheck.valid) {
         return errorResponse('invalid_response', `Invalid meta response: ${metaCheck.errors.join(' ')}`);
       }
-      return jsonResponse(raw);
+      return handlerJsonResponse(raw);
     }
 
     // 5. Subtitles Endpoint (/subtitles/{media_type}/{tmdb_id}[/{season}[/{episode}]])
     if (route === 'subtitles') {
       if (!addon.getSubtitles) {
-        return errorResponse('not_found', 'Addon does not declare the subtitles capability');
+        return errorResponse(
+          'not_found',
+          `Addon '${addon.manifest.id}' does not declare the 'subtitle' capability.`
+        );
       }
       let raw: unknown;
       try {
         raw = (await addon.getSubtitles(req)) ?? [];
       } catch (e: unknown) {
-        return toErrorResponse(e);
+        return toErrorResponse(e, options.onUnexpectedError);
       }
-      if (isErrorResponse(raw) && validateErrorResponse(raw).valid) {
-        return jsonResponse(raw, DAD_ERROR_STATUS[raw.error]);
-      }
+      const errored = errorOrMalformedError(raw);
+      if (errored) return errored;
       const subtitleCheck = validateSubtitleItems(raw);
       if (!subtitleCheck.valid) {
         return errorResponse('invalid_response', `Invalid subtitle response: ${subtitleCheck.errors.join(' ')}`);
       }
-      return jsonResponse(raw);
+      return handlerJsonResponse(raw);
     }
 
     return errorResponse('not_found', `Not found: ${pathname}`);

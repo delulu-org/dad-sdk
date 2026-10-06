@@ -5,7 +5,6 @@ import { pathToFileURL } from 'node:url';
 import { createHttpAddonHandler, type HttpAddonDefinition } from '../define.js';
 import { CAPABILITY_ROUTES } from '../manifest.js';
 import { DAD_TEST_FIXTURES } from '../fixtures.js';
-import { checkAddonId } from './registry.js';
 
 const DEFAULT_PORT = 7890;
 
@@ -112,26 +111,9 @@ async function devHttpAddon(addon: HttpAddonDefinition, port: number) {
 }
 
 export async function runDev(targetDir: string, opts: { port?: number } = {}): Promise<void> {
-  // Registry guard runs from the SOURCE manifest id so an id problem surfaces
-  // even before the addon is built. Only 'sealed'/'conflict' are fatal; an
-  // unreachable registry degrades to a warning so offline dev is never bricked.
   const manifestPath = path.join(targetDir, 'manifest.json');
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`No manifest.json found in ${path.relative(process.cwd(), targetDir)}.`);
-  }
-  const id = (JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as { id?: unknown }).id;
-  if (typeof id !== 'string' || id.trim() === '') {
-    throw new Error(`manifest.json is missing a string 'id'.`);
-  }
-
-  const idCheck = await checkAddonId({ id });
-  if (idCheck.status === 'sealed' || idCheck.status === 'conflict') {
-    throw new Error(`${idCheck.detail} Fix the id in manifest.json and re-run 'dad dev'.`);
-  }
-  if (idCheck.status === 'unreachable') {
-    console.log(` [warn] ${idCheck.detail}`);
-  } else {
-    console.log(` Registry: ${idCheck.detail}`);
   }
 
   const addon = await loadAddon(targetDir);

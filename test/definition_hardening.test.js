@@ -55,7 +55,7 @@ test('throws at definition time: manifest invalid', () => {
 });
 
 test('validateStreamItems enforces allowedTypes from declared capabilities', () => {
-  const torrentItem = { type: 'torrent', title: 'x', stream_url: 'magnet:?xt=urn:btih:aaaa' };
+  const torrentItem = { type: 'torrent', title: 'x', info_hash: 'a'.repeat(40), file_idx: 0, audio_languages: [] };
   // direct_stream-only addon returns a torrent item -> violation
   const res = validateStreamItems([torrentItem], { allowedTypes: ['direct'] });
   assert.equal(res.valid, false);
@@ -77,8 +77,6 @@ test('http handler rejects non-numeric tmdb_id / invalid media_type / bad season
 const badTmdb = await handler(new Request('https://addon.example.com/streams/movie/abc'));
   assert.equal(badTmdb.status, 400);
 
-  // tmdb_id must be a POSITIVE, precision-safe integer: 0, huge digit strings
-  // and leading-zero variants are all contract violations, not valid lookups.
   for (const id of ['0', '999999999999999999999', '007']) {
     const r = await handler(new Request(`https://addon.example.com/streams/movie/${id}`));
     assert.equal(r.status, 400, `tmdb_id '${id}' must be rejected`);

@@ -29,6 +29,14 @@ test('dad init scaffolds a working HTTP addon', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(target, 'manifest.json'), 'utf-8'));
   assert.equal(manifest.id, 'org.test.my-http-addon');
   assert.equal(manifest.type, 'http');
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf-8'));
+  const sdkVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8')).version;
+  assert.equal(
+    pkg.dependencies['@delulu-addon/dad-sdk'],
+    `^${sdkVersion}`,
+    `scaffold should pin the SDK being used (^${sdkVersion}), not a stale one`
+  );
 });
 
 test('dad init scaffolds an HTTP addon by default', () => {
@@ -40,8 +48,35 @@ test('dad init scaffolds an HTTP addon by default', () => {
   assert.equal(manifest.type, 'http');
 });
 
-test('dad init refuses a non-empty target directory', () => {
+test('dad init prints the manifest field guide - defaults are never a surprise', () => {
   const base = tmpDir();
+  const target = path.join(base, 'guide-addon');
+  const out = run(['init', target, '--id', 'org.test.guide-addon', '--name', 'Guide Addon']);
+
+  // Every field the dev can edit is named, so they never have to go read docs
+  // to learn what manifest.json accepts.
+  for (const field of [
+    'id',
+    'name',
+    'version',
+    'type',
+    'description',
+    'publisher',
+    'baseUrl',
+    'capabilities',
+    'apiKey',
+    'logo',
+  ]) {
+    assert.match(out, new RegExp(`\\b${field}\\b`), `expected the field guide to mention '${field}'`);
+  }
+  assert.match(out, /default_addon_logo\.png/);
+  assert.match(out, /meta, direct_stream, torrent, subtitle/);
+  assert.match(out, /serve it at \{baseUrl\}\/manifest\.json/);
+  assert.match(out, /manifestUrl/);
+  assert.match(out, /Still TODO in your scaffold: description, publisher/);
+});
+
+test('dad init refuses a non-empty target directory', () => {  const base = tmpDir();
   const target = path.join(base, 'occupied');
   fs.mkdirSync(target);
   fs.writeFileSync(path.join(target, 'existing.txt'), 'x');
@@ -96,8 +131,9 @@ const res = await fetch('http://localhost:7999/streams/movie/10378');
 });
 
 test('dad dev prints exactly ONE curl example per fixture for the /streams route, even with both direct_stream + torrent declared', async () => {
-  // Regression test: direct_stream and torrent both resolve to '/streams'
-  // (CAPABILITY_ROUTES). dad dev used to iterate manifest.capabilities
+  // direct_stream and torrent both resolve to '/streams' (CAPABILITY_ROUTES).
+  // Probing per capability would print duplicate curl examples for the same
+  // route. dad dev iterates manifest.capabilities
   // directly when printing example curl commands, so an addon declaring
   // BOTH capabilities got every /streams curl line printed twice.
   const base = tmpDir();
@@ -133,13 +169,6 @@ const nodeModulesDir = path.join(target, 'node_modules');
 });
 
 test('dad init with no target directory exits cleanly with ONE error, no secondary crash trace', () => {
-  // Regression test: the early-return guard for a missing target directory
-  // called process.exit(1) with no `return` after it. In a real terminal
-  // process.exit() terminates immediately so this "worked", but the missing
-  // `return` meant execution could still fall through past the guard (e.g.
-  // under any harness that intercepts process.exit), continuing with
-  // dirName === undefined and crashing with a confusing, unrelated
-  // "paths[1] argument must be of type string" error on top of the clean one.
   const result = spawnSync('node', [CLI, 'init'], { encoding: 'utf-8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /give a target directory/);
