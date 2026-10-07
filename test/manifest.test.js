@@ -18,7 +18,7 @@ test('validates a compliant HTTP DAD Manifest (e.g. Cinemeta)', () => {
 
 test('rejects manifest with invalid capability string', () => {
   const invalid = {
-    id: 'bad-cap',
+    id: 'com.example.bad-cap',
     name: 'Bad Cap',
     version: '1.0.0',
     type: 'http',
@@ -33,7 +33,7 @@ test('rejects manifest with invalid capability string', () => {
 
 test('rejects a manifest listing the same capability twice', () => {
   const dup = {
-    id: 'org.delulu.dup-caps',
+    id: 'com.example.dup-caps',
     name: 'Dup Caps',
     version: '1.0.0',
     type: 'http',
@@ -48,7 +48,7 @@ test('rejects a manifest listing the same capability twice', () => {
 
 test("rejects an unknown manifest type - DAD only supports HTTP addons", () => {
   const wrongType = {
-    id: 'org.delulu.something',
+    id: 'com.example.something',
     name: 'Something',
     version: '1.0.0',
     type: 'native',
@@ -197,7 +197,7 @@ test('rejects a manifest id that is not reverse-DNS - matches the format dad ini
 });
 
 test('accepts well-formed reverse-DNS ids', () => {
-  for (const id of ['org.delulu.meta-resolver', 'com.example.some-addon', 'io.github.user-name.my-addon']) {
+  for (const id of ['com.example.meta-resolver', 'com.example.some-addon', 'io.github.user-name.my-addon']) {
     const m = {
       id,
       name: 'Good Id',
@@ -211,7 +211,7 @@ test('accepts well-formed reverse-DNS ids', () => {
   }
 });
 
-test('manifest logo must be HTTPS if present - matches the catalog logo requirement', () => {
+test('manifest logo must be HTTPS if present', () => {
   const base = {
     id: 'org.example.logo-check',
     name: 'Logo Check',
@@ -268,4 +268,40 @@ test('a non-string logo is rejected with exactly ONE clear error', () => {
   const res = validateManifest({ ...base, logo: 12345 });
   assert.equal(res.valid, false);
   assert.equal(res.errors.length, 1, `expected exactly 1 error, got: ${JSON.stringify(res.errors)}`);
+});
+
+test('seals the reserved names: org.delulu.* ids and the delulu publisher are rejected', () => {
+  const base = {
+    name: 'Imposter',
+    version: '1.0.0',
+    type: 'http',
+    baseUrl: 'https://imposter.example.com',
+    capabilities: ['meta'],
+  };
+
+  // Any id in the reserved namespace is rejected - the bare root, deeper names,
+  // and case variants.
+  for (const id of ['org.delulu.pd', 'org.delulu.a.b.c', 'org.delulu', 'ORG.DELULU.pd']) {
+    const res = validateManifest({ ...base, id });
+    assert.equal(res.valid, false, `expected reserved id '${id}' to be rejected`);
+    assert.ok(
+      res.errors.some((e) => e.includes('org.delulu') && e.includes('reserved')),
+      `expected a reserved-namespace error for '${id}': ${res.errors.join(', ')}`
+    );
+  }
+
+  // The reserved publisher is rejected on ANY id, case/whitespace-insensitive.
+  for (const publisher of ['delulu', 'DELULU', '  delulu  ']) {
+    const res = validateManifest({ ...base, id: 'com.example.ok', publisher });
+    assert.equal(res.valid, false, `expected reserved publisher '${publisher}' to be rejected`);
+    assert.ok(
+      res.errors.some((e) => e.includes('reserved')),
+      `expected a reserved-publisher error for '${publisher}': ${res.errors.join(', ')}`
+    );
+  }
+
+  // A normal id and publisher is fine; so is a normal id with no publisher.
+  const ok = validateManifest({ ...base, id: 'com.example.ok', publisher: 'Example Co.' });
+  assert.equal(ok.valid, true, ok.errors.join(', '));
+  assert.equal(validateManifest({ ...base, id: 'com.example.ok' }).valid, true);
 });

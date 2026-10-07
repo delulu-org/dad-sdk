@@ -555,13 +555,23 @@ export function validateStreamItems(
 // 4. Subtitle Types
 // ============================================================================
 
+/**
+ * Subtitle container formats DAD accepts. `vtt`/`srt` are the web baseline,
+ * `ass`/`ssa` are the styled fan-sub formats, and `ttml`/`dfxp` are the
+ * XML caption-exchange formats. The SDK is not a transcoder - it only checks
+ * that an author advertises one of these; the player does the rendering.
+ */
+export type DadSubtitleFormat = 'vtt' | 'srt' | 'ass' | 'ssa' | 'ttml' | 'dfxp';
+
+export const DAD_SUBTITLE_FORMATS: readonly DadSubtitleFormat[] = ['vtt', 'srt', 'ass', 'ssa', 'ttml', 'dfxp'];
+
 export interface DadSubtitleItem {
   id: string;
   url: string;
   lang_code: string; // e.g. "en", "es", "bn", "hi"
   language: string;  // e.g. "English", "Spanish", "Bengali"
   title: string;     // e.g. "English [SDH]"
-  format: 'vtt' | 'srt';
+  format: DadSubtitleFormat;
   provider?: string | null;
 }
 
@@ -595,8 +605,8 @@ export function validateSubtitleItems(items: unknown): { valid: boolean; errors:
           `(javascript:, file:, and similar schemes are never valid subtitle URLs.)`
       );
     }
-    if (s.format !== 'vtt' && s.format !== 'srt') {
-      errors.push(`Subtitle item #${i + 1}: 'format' must be 'vtt' or 'srt'`);
+    if (!DAD_SUBTITLE_FORMATS.includes(s.format)) {
+      errors.push(`Subtitle item #${i + 1}: 'format' must be one of ${DAD_SUBTITLE_FORMATS.join(', ')}`);
     }
   });
   return { valid: errors.length === 0, errors };

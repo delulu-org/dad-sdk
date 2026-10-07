@@ -94,7 +94,12 @@ export interface BaseDadManifest {
  * their own backend; the SDK only delivers the key, securely and typed.
  */
 export interface DadApiKey {
-  /** Hard gate: if `true`, the addon cannot be installed until a key is provided. */
+  /**
+   * If `true`, the addon installs fine but stays inert until the user provides
+   * a key: Delulu Core will not call it, and `createHttpAddonHandler` answers
+   * every keyless request with `401 { error: 'unauthorized' }`. The client
+   * prompts the user to get a key from `pageUrl`.
+   */
   required: boolean;
 
   /**
@@ -109,10 +114,9 @@ export interface DadApiKey {
  * HTTP DAD Addon Manifest (`type: "http"`) - the only addon type DAD
  * currently supports.
  *
- * This file IS the contract. Each addon serves it at `{baseUrl}/manifest.json`,
- * and a catalog only points at it (`manifestUrl`) for discovery - the addon
- * itself is fetched, re-validated, and cached from that URL at install time,
- * so the manifest - not the catalog copy - is what Delulu Core acts on.
+ * This file IS the contract. Each addon serves it at `{baseUrl}/manifest.json`.
+ * It is fetched and re-validated at install time, so the manifest itself - not
+ * any copy of it - is what Delulu Core acts on.
  *
  * Hosted remotely as a web microservice (Cloudflare Workers, Go, Python, Node, etc.).
  * HTTP addons are NOT SIGNED - there is no downloadable artifact to protect and
@@ -143,12 +147,31 @@ export interface HttpDadManifest extends BaseDadManifest {
 export type DadManifest = HttpDadManifest;
 
 /**
- * Validates the structure and required fields of a DAD manifest.
+ * Reverse-DNS namespace reserved for Delulu's own official addons. No other
+ * publisher may use an id under it.
+ */
+export const RESERVED_ID_PREFIX = 'org.delulu.';
+
+/** Publisher name reserved for Delulu's own official addons. */
+export const RESERVED_PUBLISHER = 'delulu';
+
+/**
+ * True when an addon id claims the reserved `org.delulu.` namespace
+ * (case-insensitive). A trailing dot is not required - the bare `org.delulu`
+ * is reserved too.
+ */
+export function usesReservedId(id: string): boolean {
+  const lower = id.toLowerCase();
+  return lower === RESERVED_ID_PREFIX.slice(0, -1) || lower.startsWith(RESERVED_ID_PREFIX);
+}
+
+/**
+ * Validates a single DAD manifest - the one addon the developer is building.
  *
- * Used for BOTH sides of the wire and nothing in between: an author's
- * `manifest.json` on disk, the copy an addon serves over HTTP, and the copy a
- * client fetched from a catalog. There is no build or signing step that can
- * add fields later, so there is only ONE validator.
+ * Used identically by `defineHttpAddon`, `dad validate`, and `dad test` (which
+ * validates the deployed manifest it fetches). Enforces the DAD contract AND
+ * the sealed names: `RESERVED_ID_PREFIX` (an id namespace) and
+ * `RESERVED_PUBLISHER` (a publisher name) belong to Delulu's own addons only.
  */
 export function validateManifest(raw: unknown): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -165,6 +188,23 @@ export function validateManifest(raw: unknown): { valid: boolean; errors: string
   } else if (!ID_PATTERN.test(m.id)) {
     errors.push(
       `'id' must be reverse-DNS (e.g. 'org.yourname.addon-name') - got '${m.id}'. Same format 'dad init' enforces at scaffold time.`
+    );
+  }
+
+  // Sealed names. The `org.delulu` id namespace and the `delulu` publisher are
+  // reserved for the team's own addons - a non-team manifest may use neither,
+  // in any case, ever. Hard error, no exceptions and no allowlist: the SDK
+  // only ever checks the one addon the developer is building.
+  if (typeof m.id === 'string' && usesReservedId(m.id)) {
+    errors.push(
+      `'id' may not use the reserved '${RESERVED_ID_PREFIX}' namespace - that id space belongs to Delulu's own ` +
+        `addons. Use your own reverse-DNS id (e.g. 'com.yourname.addon-name').`
+    );
+  }
+  if (typeof m.publisher === 'string' && m.publisher.trim().toLowerCase() === RESERVED_PUBLISHER) {
+    errors.push(
+      `'publisher' may not be '${RESERVED_PUBLISHER}' - that name is reserved for Delulu's own addons. Use your own ` +
+        `name or org.`
     );
   }
   if (!m.name || typeof m.name !== 'string') errors.push("Missing or invalid 'name' string");

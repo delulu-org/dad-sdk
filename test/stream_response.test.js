@@ -5,6 +5,8 @@ import {
   createHttpAddonHandler,
 validateStreamItem,
   validateStreamItems,
+  validateSubtitleItems,
+  DAD_SUBTITLE_FORMATS,
   allowedStreamTypesForCapabilities,
 } from '../dist/index.js';
 
@@ -399,6 +401,28 @@ test('rejects embedded subtitle string fields that are empty or whitespace-only'
   assert.equal(res.valid, false);
   const joined = res.errors.join('');
   assert.ok(joined.includes('non-empty'), `expected non-empty field errors, got: ${joined}`);
+});
+
+test('DAD_SUBTITLE_FORMATS is exactly the approved set', () => {
+  assert.deepEqual([...DAD_SUBTITLE_FORMATS], ['vtt', 'srt', 'ass', 'ssa', 'ttml', 'dfxp']);
+});
+
+test('accepts every declared subtitle format (vtt, srt, ass, ssa, ttml, dfxp)', () => {
+  for (const format of DAD_SUBTITLE_FORMATS) {
+    const res = validateSubtitleItems([
+      { id: `x-${format}`, url: `https://cdn.example.com/a.${format}`, lang_code: 'en', language: 'English', title: 'English', format },
+    ]);
+    assert.equal(res.valid, true, `expected '${format}' to be accepted: ${res.errors.join('; ')}`);
+  }
+});
+
+test('rejects an unknown subtitle format and lists the allowed ones', () => {
+  const res = validateSubtitleItems([
+    { id: 'x', url: 'https://cdn.example.com/a.pdf', lang_code: 'en', language: 'English', title: 'English', format: 'pdf' },
+  ]);
+  assert.equal(res.valid, false);
+  const joined = res.errors.join('');
+  assert.ok(joined.includes('ass') && joined.includes('dfxp'), `expected the allowed formats listed, got: ${joined}`);
 });
 
 test('http handler returns 422 when an addon embeds malformed subtitles on a stream', async () => {

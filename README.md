@@ -177,6 +177,10 @@ a provider-only track) are embedded directly on the stream item:
 }
 ```
 
+`format` is one of `vtt`, `srt`, `ass`, `ssa`, `ttml`, `dfxp` - the SDK checks
+only that you advertise a supported container; it never transcodes. The player
+does the rendering.
+
 `subtitles` follows the exact same contract as a standalone `/subtitles`
 response - every embedded track is validated with the same rules. Universal
 tracks (apply to any stream of a title) still belong in `/subtitles`; anything
@@ -328,20 +332,25 @@ you write a line of code:
 
 | Field | Required | What it does |
 | --- | --- | --- |
-| `id` | yes | Reverse-DNS id, matched case-sensitively against the catalog. Don't rename after publishing. |
+| `id` | yes | Reverse-DNS id (e.g. `com.yourname.my-addon`). Don't rename after publishing. The `org.delulu.` namespace is **sealed** - reserved for Delulu's own addons. |
 | `name` | yes | Display name in the client. |
-| `version` | yes | Strict `major.minor.patch`. The client's source of truth - the catalog's copy is only a discovery hint. |
+| `version` | yes | Strict `major.minor.patch`. |
 | `type` | yes | Always `"http"` - the only type DAD supports. |
 | `baseUrl` | yes | A bare HTTPS origin - **no path, no query string, no fragment** (`https://your-addon.example.com`). Routes live directly under it. |
 | `capabilities` | yes | Any of `meta`, `direct_stream`, `torrent`, `subtitle`. Every declared capability needs its matching handler, or `defineHttpAddon` throws. |
-| `apiKey` | no | `{ required, pageUrl }` - the install gate. See below. |
-| `description` | no | One line for the listing shelf. |
-| `publisher` | no | Your name or org. |
+| `apiKey` | no | `{ required, pageUrl }` - the API-key gate. See below. |
+| `description` | no | One-line description. |
+| `publisher` | no | Your name or org. The name `delulu` is **sealed** - reserved for Delulu's own addons. |
 | `logo` | no | HTTPS URL. **Leave it out and the SDK injects the shared default** - `https://delulu-addons.pages.dev/default_addon_logo.png` - at the define layer, so the client always has a logo to render. Set your own only if you have one; nothing is fetched or validated at build time. Override the default host-wide with `DAD_DEFAULT_LOGO_URL`. |
 
-This file is the contract: serve it at `{baseUrl}/manifest.json`, and a
-catalog lists it by URL (see [The catalog](#the-catalog)). `null`, `""`, and
-`"   "` all mean "no logo of my own" everywhere - validator and injector agree.
+This file is the contract: serve it at `{baseUrl}/manifest.json`. The client
+fetches, validates, and caches it at install time. `null`, `""`, and `"   "`
+all mean "no logo of my own" everywhere - validator and injector agree.
+
+**Sealed names.** Two identities belong to Delulu's own addons and no one else:
+any id under `org.delulu.`, and the publisher name `delulu`. `validateManifest`,
+`defineHttpAddon`, `dad validate`, and `dad test` all reject a manifest that
+uses either - there is no allowlist and no exception.
 
 ### API keys (the "LLM key" model)
 
@@ -351,6 +360,12 @@ catalog lists it by URL (see [The catalog](#the-catalog)). `null`, `""`, and
 }
 ```
 
+An addon with `apiKey` **installs normally** - a required key does not block
+installation. It simply stays inert until the user supplies one: Delulu Core
+will not call the addon, and it shows a "get API key" prompt that opens
+`pageUrl`. So installation happens without a key; the addon just will not work
+until the user provides one.
+
 The client sends `Authorization: Bearer <key>` on every request once the
 user has one. It arrives in your handler as `req.auth`. What it unlocks -
 free tier, paid tier, per-key rate limits - is entirely up to your backend.
@@ -358,51 +373,11 @@ A single opaque key, author-defined scope: the same shape as an OpenAI/
 Anthropic API key, and the right amount of mechanism for "one author, one
 backend, one key gating access to their own service."
 
-`required: true` is **enforced, not advisory**: `createHttpAddonHandler`
-rejects any request without a key with `401 { error: 'unauthorized' }` before
-your handler ever runs. `required: false` means the key is a bonus, and
-anonymous requests still work.
-
----
-
-## The catalog
-
-A catalog is a **shelf, not a source of truth**. Each row is display data plus
-one pointer:
-
-```json
-{
-  "addons": [
-    {
-      "id": "org.example.my-addon",
-      "name": "My Addon",
-      "version": "1.0.0",
-      "type": "http",
-      "manifestUrl": "https://your-addon.example.com/manifest.json",
-      "description": "One line for the shelf.",
-      "publisher": "Your name",
-      "logo": "https://your-addon.example.com/logo.png"
-    }
-  ]
-}
-```
-
-At install time the client fetches `manifestUrl`, validates it with the same
-`validateManifest` you ran locally, caches it, and drives every request from
-`baseUrl` / `capabilities` / `apiKey` **as declared in the manifest**. So:
-
-- A catalog row must NOT carry `baseUrl` or `apiKey`. Those live in the
-  manifest now; a leftover copy is rejected with a migration error.
-- `version` in a row is a discovery copy so a client can show "1.0.0 available"
-  without fetching every manifest. Keep it in step with the manifest.
-- `logo` in a row is cosmetic only and may be omitted even if the manifest has
-  one.
-
-There are two catalogs with this identical shape: an **official** one the team
-hand-curates, and community/unofficial ones third parties self-publish. There
-is no `official: true` field to set - official status is derived from the
-addon's id starting with `org.delulu.` (case-insensitive), which is a namespace
-reservation rather than something a publisher can declare.
+Server-side, `required: true` is **enforced, not advisory**:
+`createHttpAddonHandler` rejects any request without a key with
+`401 { error: 'unauthorized' }` before your handler ever runs - backing up the
+client-side gate. `required: false` means the key is a bonus, and anonymous
+requests still work.
 
 ---
 
@@ -414,8 +389,6 @@ reservation rather than something a publisher can declare.
 3. `npx dad validate` - checks the manifest against the DAD schema.
 4. `npx dad test https://your-addon.example.com/manifest.json` - probes the
    deployed host.
-5. Add a row pointing at your `manifestUrl` to the official catalog (open a PR)
-   or your own community catalog.
 
 HTTP addons are **not signed**: there's no downloadable artifact to protect,
 and the manifest is fetched live and re-validated at install time.
@@ -511,7 +484,6 @@ src/
   responses.ts   Request/response types + validators (meta, streams, subtitles)
   define.ts      defineHttpAddon / createHttpAddonHandler
   version.ts     Strict semver format check
-  catalog.ts     Catalog schema (pointer + display rows) + validateCatalog
   fixtures.ts    Public-domain TMDB fixtures (Big Buck Bunny, Sintel, ...)
   cli.ts         `dad` CLI entrypoint
   cli/
@@ -527,7 +499,7 @@ Everything is exported from the package root:
 import {
   defineHttpAddon, createHttpAddonHandler,
   DadError, DAD_ERROR_STATUS,
-  validateManifest, validateCatalog, isOfficialId,
+  validateManifest, usesReservedId, RESERVED_ID_PREFIX, RESERVED_PUBLISHER,
   validateStreamItems, validateMetaResponse, validateSubtitleItems,
   isValidVersion,
   DAD_TEST_FIXTURES,

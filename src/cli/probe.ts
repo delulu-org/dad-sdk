@@ -272,7 +272,7 @@ export async function testAddon(
     }
   }
 
-  // Whether the addon declares an install gate at all - decides whether a 401
+  // Whether the addon declares a key gate at all - decides whether a 401
   // is the gate working or a broken deployment.
   const declaresKeyGate = manifest.apiKey !== undefined && manifest.apiKey !== null;
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DAD_CAPABILITIES, DAD_DEFAULT_LOGO_URL } from '../manifest.js';
+import { DAD_CAPABILITIES, DAD_DEFAULT_LOGO_URL, usesReservedId, RESERVED_ID_PREFIX } from '../manifest.js';
 import { httpAddonTemplate } from './templates.js';
 
 const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/;
@@ -20,13 +20,13 @@ function printManifestGuide(manifestJson: string): void {
   const rows: [string, string][] = [
     ['id', 'reverse-DNS - do not rename after publishing. org.delulu.* is the team\'s reserved namespace'],
     ['name', 'display name in the client'],
-    ['version', 'strict major.minor.patch - the client reads this from YOUR manifest, not the catalog'],
+    ['version', 'strict major.minor.patch - the version the client reads from YOUR manifest'],
     ['type', "'http' - the only addon type DAD supports"],
     ['description', 'one line for the listing shelf'],
     ['publisher', 'your name or org'],
     ['baseUrl', 'bare HTTPS origin (no path/query/fragment) - your live server; every data request goes here; serve this file at {baseUrl}/manifest.json'],
     ['capabilities', `any of: ${DAD_CAPABILITIES.join(', ')}`],
-    ['apiKey', 'optional { required, pageUrl } gate - required:true makes the handler 401 any keyless request'],
+    ['apiKey', 'optional { required, pageUrl } - required:true still installs, but the addon is locked (Core will not call it, the handler 401s) until the user provides a key'],
     ['logo', `optional HTTPS - omit it and the shared default is injected (${DAD_DEFAULT_LOGO_URL})`],
   ];
 
@@ -37,8 +37,8 @@ function printManifestGuide(manifestJson: string): void {
   }
 
   console.log(`\n This file IS the contract: serve it at {baseUrl}/manifest.json.`);
-  console.log(` A catalog row only points at it (manifestUrl) - the client fetches, validates, and`);
-  console.log(` caches THIS file at install time, then drives every request from baseUrl/capabilities/apiKey.`);
+  console.log(` The client fetches, validates, and caches THIS file at install time, then drives`);
+  console.log(` every request from baseUrl/capabilities/apiKey.`);
 
   if (todos.length > 0) {
     console.log(`\n Still TODO in your scaffold: ${todos.join(', ')}`);
@@ -70,6 +70,14 @@ export async function runInit(
     process.exit(1);
     return;
   }
+  if (usesReservedId(id)) {
+    console.error(
+      ` Error: '${id}' uses the reserved '${RESERVED_ID_PREFIX}' namespace, which belongs to Delulu's own addons. ` +
+        `Pick your own id, e.g. 'com.yourname.${dirName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}'.`
+    );
+    process.exit(1);
+    return;
+  }
 
   const files = httpAddonTemplate(id, name);
   const manifestJson = files.find((f) => f.path === 'manifest.json')?.content ?? '{}';
@@ -94,6 +102,6 @@ export async function runInit(
   console.log(`   npx dad dev`);
   console.log('');
   console.log(` When ready: deploy src/index.ts's 'handler' export, point manifest.json's baseUrl at it,`);
-  console.log(` serve this file at {baseUrl}/manifest.json, then add a catalog row pointing at that URL.`);
+  console.log(` and serve this file at {baseUrl}/manifest.json.`);
   console.log('');
 }

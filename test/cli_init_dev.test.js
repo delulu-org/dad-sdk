@@ -72,7 +72,6 @@ test('dad init prints the manifest field guide - defaults are never a surprise',
   assert.match(out, /default_addon_logo\.png/);
   assert.match(out, /meta, direct_stream, torrent, subtitle/);
   assert.match(out, /serve it at \{baseUrl\}\/manifest\.json/);
-  assert.match(out, /manifestUrl/);
   assert.match(out, /Still TODO in your scaffold: description, publisher/);
 });
 
@@ -81,6 +80,20 @@ test('dad init refuses a non-empty target directory', () => {  const base = tmpD
   fs.mkdirSync(target);
   fs.writeFileSync(path.join(target, 'existing.txt'), 'x');
   assert.throws(() => run(['init', target, '--id', 'org.test.x']));
+});
+
+test('dad init refuses the reserved org.delulu. id namespace (sealed)', () => {
+  const base = tmpDir();
+  const target = path.join(base, 'sneaky');
+  let err;
+  try {
+    run(['init', target, '--id', 'org.delulu.sneaky', '--name', 'Sneaky']);
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, 'expected dad init to refuse the reserved namespace');
+  assert.match(String(err.stderr), /reserved/);
+  assert.ok(!fs.existsSync(path.join(target, 'manifest.json')), 'nothing should be scaffolded');
 });
 
 test('scaffolded HTTP addon builds with tsc against the real SDK and dad dev serves it', async () => {

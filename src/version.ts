@@ -6,11 +6,7 @@
  *
  * There is exactly ONE version per addon: the `version` inside the addon's own
  * `manifest.json`, which is what Delulu Core acts on after fetching and
- * validating it at install time. A catalog's `version` field is a DISCOVERY
- * copy - it lets a client list "2.1.0 available" without fetching every
- * manifest - so a publisher must keep it in step with the manifest. This module
- * only validates the format; deciding whether an update is a legal bump belongs
- * to the catalog, not to the SDK.
+ * validating it at install time. This module only validates the format.
  */
 
 // No leading zeros on any segment (matches strict semver: '01.2.0' is
