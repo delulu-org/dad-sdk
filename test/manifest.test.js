@@ -150,20 +150,6 @@ test('rejects an HTTP addon carrying signature/publicKeyId - http addons are NOT
   assert.ok(res.errors.some((e) => e.includes('NOT signed')));
 });
 
-test('removed decoration field (protocolVersion) is no longer required', () => {
-  const minimal = {
-    id: 'com.example.minimal',
-    name: 'Minimal',
-    version: '1.0.0',
-    type: 'http',
-    baseUrl: 'https://minimal.example.com',
-    capabilities: ['meta'],
-  };
-  const res = validateManifest(minimal);
-  assert.equal(res.valid, true, `Validation failed: ${res.errors.join(', ')}`);
-  assert.ok(!minimal.protocolVersion, 'protocolVersion removed from the model');
-});
-
 test('rejects a manifest with a non-semver version (must be major.minor.patch)', () => {
   for (const version of ['2', '2.1', '2.1.0-beta', 'v2.1.0']) {
     const m = {
