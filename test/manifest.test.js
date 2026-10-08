@@ -150,7 +150,7 @@ test('rejects an HTTP addon carrying signature/publicKeyId - http addons are NOT
   assert.ok(res.errors.some((e) => e.includes('NOT signed')));
 });
 
-test('removed decoration fields (protocolVersion, minAppVersion) are no longer required', () => {
+test('removed decoration field (protocolVersion) is no longer required', () => {
   const minimal = {
     id: 'com.example.minimal',
     name: 'Minimal',
