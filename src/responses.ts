@@ -611,3 +611,56 @@ export function validateSubtitleItems(items: unknown): { valid: boolean; errors:
   });
   return { valid: errors.length === 0, errors };
 }
+
+// ============================================================================
+// 5. Health Types
+// ============================================================================
+
+/**
+ * Universal Health Pong response.
+ * Standard across both local and HTTP SDKs.
+ * 4 fields only: ok, addon_id, name, version.
+ */
+export interface DadHealthPong {
+  ok: true;
+  addon_id: string;
+  name: string;
+  version: string;
+}
+
+/**
+ * Validates a health pong payload against the universal 4-field contract.
+ */
+export function validateHealthPong(raw: unknown): { valid: boolean; errors: string[] } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { valid: false, errors: ['Health pong must be an object'] };
+  }
+  const errors: string[] = [];
+  const obj = raw as Record<string, unknown>;
+
+  const allowedKeys = new Set(['ok', 'addon_id', 'name', 'version']);
+  for (const key of Object.keys(obj)) {
+    if (!allowedKeys.has(key)) {
+      errors.push(`Unknown field in health pong: '${key}'`);
+    }
+  }
+
+  if (obj.ok !== true) {
+    errors.push("'ok' must be boolean true");
+  }
+
+  if (typeof obj.addon_id !== 'string' || obj.addon_id.trim() === '') {
+    errors.push("Missing or invalid non-empty 'addon_id' string");
+  }
+
+  if (typeof obj.name !== 'string' || obj.name.trim() === '') {
+    errors.push("Missing or invalid non-empty 'name' string");
+  }
+
+  if (typeof obj.version !== 'string' || obj.version.trim() === '') {
+    errors.push("Missing or invalid non-empty 'version' string");
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+

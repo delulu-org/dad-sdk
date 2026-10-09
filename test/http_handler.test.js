@@ -5,6 +5,7 @@ import {
   createHttpAddonHandler,
   DadError,
   validateErrorResponse,
+  validateHealthPong,
   DAD_ERROR_STATUS,
 } from '../dist/index.js';
 
@@ -556,3 +557,35 @@ test('http handler: a well-formed error object still passes through untouched', 
   assert.deepEqual(data, { error: 'content_unavailable', error_message: 'no trailers for this title' });
 });
 
+test('http handler: serves ungated health check at /health, /healthCheck, and /ping', async () => {
+  const addon = defineHttpAddon({
+    manifest: {
+      id: 'com.example.health-test',
+      name: 'Health Test Addon',
+      version: '1.2.3',
+      type: 'http',
+      baseUrl: 'https://addon.example.com',
+      capabilities: ['direct_stream'],
+      apiKey: { required: true, pageUrl: 'https://addon.example.com/keys' },
+    },
+    async getStreams() {
+      return [];
+    },
+  });
+
+  const handler = createHttpAddonHandler(addon);
+
+  for (const path of ['/health', '/healthCheck', '/ping']) {
+    const res = await handler(new Request('https://addon.example.com' + path));
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+    const data = await res.json();
+    assert.deepEqual(data, {
+      ok: true,
+      addon_id: 'com.example.health-test',
+      name: 'Health Test Addon',
+      version: '1.2.3',
+    });
+    assert.equal(validateHealthPong(data).valid, true);
+  }
+});

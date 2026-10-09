@@ -218,6 +218,17 @@ export function createHttpAddonHandler(
       return handlerJsonResponse(addon.manifest);
     }
 
+    // Health check endpoints are universal across local & HTTP addons:
+    // 4 fields, ungated even when apiKey.required is true.
+    if (pathname === '/health' || pathname === '/healthCheck' || pathname === '/ping') {
+      return handlerJsonResponse({
+        ok: true,
+        addon_id: addon.manifest.id,
+        name: addon.manifest.name,
+        version: addon.manifest.version,
+      });
+    }
+
     const segments = pathname.split('/').filter(Boolean);
     const route = segments[0] as string | undefined;
 

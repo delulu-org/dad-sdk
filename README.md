@@ -214,6 +214,31 @@ ship per-resolution or per-format variants. Older fields (`logo_url`,
 `trailer_url`, `trailer_sources`) from pre-2.0 addons are tolerated and
 ignored.
 
+### Health checks (the universal ping/pong contract)
+
+Delulu Core and host infrastructure monitor addon health, liveness, and readiness via standard HTTP endpoints served automatically by `createHttpAddonHandler`:
+
+* `GET /health`
+* `GET /healthCheck`
+* `GET /ping`
+
+Every endpoint returns the universal 4-field pong payload with HTTP `200 OK` and CORS headers (`Access-Control-Allow-Origin: *`):
+
+```json
+{
+  "ok": true,
+  "addon_id": "org.example.my-addon",
+  "name": "My Addon",
+  "version": "1.0.0"
+}
+```
+
+#### Key Rules:
+1. **Zero Configuration**: Served automatically out of the box — addon authors do not need to implement any custom health handler.
+2. **API Key Immunity**: Even if an addon specifies `apiKey.required: true`, health endpoints are **completely ungated**. They never require an `Authorization: Bearer` header and will **never** return `401 Unauthorized`.
+3. **Strict 4-Field Contract**: `ok`, `addon_id`, `name`, and `version`. `protocol_version` is intentionally omitted because wire protocol versions are declared in `manifest.json` and do not apply to HTTP/HTTPS web endpoints.
+4. **Validation**: The SDK exports `validateHealthPong(raw)` and the TypeScript interface `DadHealthPong` for host engines and probes.
+
 ### Errors (the DAD error model)
 
 Every failure any addon can hit is one **closed-set machine-readable code** in
