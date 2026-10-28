@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DAD_CAPABILITIES, DAD_DEFAULT_LOGO_URL, usesReservedId, RESERVED_ID_PREFIX } from '../manifest.js';
-import { httpAddonTemplate } from './templates.js';
+import { httpAddonTemplate, jsAddonTemplate } from './templates.js';
 
 const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/;
 
@@ -13,6 +13,7 @@ const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/;
  */
 function printManifestGuide(manifestJson: string): void {
   const manifest = JSON.parse(manifestJson) as Record<string, unknown>;
+  const isJs = manifest.type === 'js';
   const todos = Object.entries(manifest)
     .filter(([, v]) => typeof v === 'string' && v.startsWith('TODO'))
     .map(([k]) => k);
@@ -21,14 +22,22 @@ function printManifestGuide(manifestJson: string): void {
     ['id', 'reverse-DNS - do not rename after publishing. org.delulu.* is the team\'s reserved namespace'],
     ['name', 'display name in the client'],
     ['version', 'strict major.minor.patch - the version the client reads from YOUR manifest'],
-    ['type', "'http' - the only addon type DAD supports"],
+    ['type', isJs ? "'js' - sandboxed client-side QuickJS scraper" : "'http' - server-hosted remote web service"],
     ['description', 'one line for the listing shelf'],
     ['publisher', 'your name or org'],
-    ['baseUrl', 'bare HTTPS origin (no path/query/fragment) - your live server; every data request goes here; serve this file at {baseUrl}/manifest.json'],
-    ['capabilities', `any of: ${DAD_CAPABILITIES.join(', ')}`],
-    ['apiKey', 'optional { required, pageUrl } - required:true still installs, but the addon is locked (Core will not call it, the handler 401s) until the user provides a key'],
-    ['logo', `optional HTTPS - omit it and the shared default is injected (${DAD_DEFAULT_LOGO_URL})`],
   ];
+
+  if (isJs) {
+    rows.push(['bundle', 'object { url, sha256 } - single monolithic .js file; dad bundle updates sha256 automatically']);
+  } else {
+    rows.push(['baseUrl', 'bare HTTPS origin (no path/query/fragment) - your live server; every data request goes here; serve this file at {baseUrl}/manifest.json']);
+  }
+
+  rows.push(
+    ['capabilities', `any of: ${DAD_CAPABILITIES.join(', ')}`],
+    ['apiKey', 'optional { required, pageUrl } - required:true still installs, but the addon is locked until the user provides a key'],
+    ['logo', `optional HTTPS - omit it and the shared default is injected (${DAD_DEFAULT_LOGO_URL})`],
+  );
 
   console.log(`\n manifest.json - every field you control:`);
   const labelWidth = Math.max(...rows.map(([k]) => k.length));
@@ -36,9 +45,13 @@ function printManifestGuide(manifestJson: string): void {
     console.log(`   ${key.padEnd(labelWidth)}  ${help}`);
   }
 
-  console.log(`\n This file IS the contract: serve it at {baseUrl}/manifest.json.`);
-  console.log(` The client fetches, validates, and caches THIS file at install time, then drives`);
-  console.log(` every request from baseUrl/capabilities/apiKey.`);
+  if (isJs) {
+    console.log(`\n Build your bundle with 'dad bundle' - it automatically updates 'bundle.sha256'.`);
+  } else {
+    console.log(`\n This file IS the contract: serve it at {baseUrl}/manifest.json.`);
+    console.log(` The client fetches, validates, and caches THIS file at install time, then drives`);
+    console.log(` every request from baseUrl/capabilities/apiKey.`);
+  }
 
   if (todos.length > 0) {
     console.log(`\n Still TODO in your scaffold: ${todos.join(', ')}`);
@@ -47,7 +60,7 @@ function printManifestGuide(manifestJson: string): void {
 
 export async function runInit(
   targetArg: string | undefined,
-  opts: { id?: string; name?: string }
+  opts: { id?: string; name?: string; type?: string }
 ): Promise<void> {
   const dirName = targetArg || (opts.name ? opts.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-') : undefined);
   if (!dirName) {
@@ -79,7 +92,8 @@ export async function runInit(
     return;
   }
 
-  const files = httpAddonTemplate(id, name);
+  const isJs = opts.type?.toLowerCase() === 'js';
+  const files = isJs ? jsAddonTemplate(id, name) : httpAddonTemplate(id, name);
   const manifestJson = files.find((f) => f.path === 'manifest.json')?.content ?? '{}';
 
   fs.mkdirSync(targetDir, { recursive: true });
@@ -90,7 +104,7 @@ export async function runInit(
   }
 
   const displayPath = path.relative(process.cwd(), targetDir) || '.';
-  console.log(`\n Created http addon '${name}' in ./${displayPath}\n`);
+  console.log(`\n Created ${isJs ? 'sandboxed JS' : 'http'} addon '${name}' in ./${displayPath}\n`);
   console.log(` Addon id:   ${id}`);
 
   printManifestGuide(manifestJson);
@@ -98,10 +112,15 @@ export async function runInit(
   console.log(`\n Next steps:`);
   console.log(`   cd ${dirName}`);
   console.log(`   npm install`);
-  console.log(`   npm run build`);
-  console.log(`   npx dad dev`);
-  console.log('');
-  console.log(` When ready: deploy src/index.ts's 'handler' export, point manifest.json's baseUrl at it,`);
-  console.log(` and serve this file at {baseUrl}/manifest.json.`);
+  if (isJs) {
+    console.log(`   npx dad bundle`);
+    console.log(`   npx dad test`);
+  } else {
+    console.log(`   npm run build`);
+    console.log(`   npx dad dev`);
+    console.log('');
+    console.log(` When ready: deploy src/index.ts's 'handler' export, point manifest.json's baseUrl at it,`);
+    console.log(` and serve this file at {baseUrl}/manifest.json.`);
+  }
   console.log('');
 }

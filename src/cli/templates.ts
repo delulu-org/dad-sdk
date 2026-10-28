@@ -158,12 +158,17 @@ export const addon = defineHttpAddon({
   },
 
   // Uncomment + declare 'meta' in manifest.json capabilities to enrich
-  // metadata the core app doesn't already have from TMDB (IMDb id/rating,
-  // official trailers). Return null when you found nothing for this title.
+  // metadata the core app doesn't already have from TMDB (IMDb id,
+  // overall IMDb rating, season episode ratings, official trailers).
   // First trailer URL is the default; the client's player handles quality.
   //
   // async getMeta(req) {
-  //   return { imdb_id: 'tt1254207', imdb_rating: 6.4, trailers: ['https://.../trailer.mp4'] };
+  //   return {
+  //     imdb_id: 'tt0903747',
+  //     overall_imdb_rating: 9.5,
+  //     episode_imdb_ratings: req.s === 1 ? { 1: 9.0, 2: 8.7 } : undefined,
+  //     trailers: ['https://.../trailer.mp4'],
+  //   };
   // },
 
   // Uncomment + declare 'subtitle' in manifest.json capabilities.
@@ -233,6 +238,135 @@ handlers), or run \`node dist/server.js\` for plain Node hosting. Then update
 \`\`\`bash
 npx dad validate
 \`\`\`
+`,
+    },
+  ];
+}
+
+/**
+ * JavaScript addon starter - a sandboxed client-side scraper that executes
+ * inside Delulu Core's embedded QuickJS runtime.
+ */
+export function jsAddonTemplate(id: string, name: string): TemplateFile[] {
+  return [
+    {
+      path: 'package.json',
+      content: `{
+  "name": "${name.toLowerCase().replace(/[^a-z0-9-]+/g, '-')}",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "dad bundle",
+    "bundle": "dad bundle",
+    "test": "dad test",
+    "validate": "dad validate"
+  },
+  "dependencies": {
+    "@delulu-addon/dad-sdk": "^${SDK_VERSION}"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
+`,
+    },
+    { path: 'tsconfig.json', content: tsconfigJson },
+    { path: '.gitignore', content: gitignore },
+    {
+      path: 'manifest.json',
+      content: `{
+  "id": "${id}",
+  "name": "${name}",
+  "version": "1.0.0",
+  "type": "js",
+  "description": "TODO: one-line description of what this addon provides",
+  "publisher": "TODO: your name or org",
+  "bundle": {
+    "url": "https://your-addon-cdn.example.com/bundle.js",
+    "sha256": ""
+  },
+  "capabilities": ["direct_stream"]
+}
+`,
+    },
+    {
+      path: 'src/index.ts',
+      content: `import { defineJsAddon } from '@delulu-addon/dad-sdk';
+
+export default defineJsAddon({
+  manifest: {
+    id: '${id}',
+    name: '${name}',
+    version: '1.0.0',
+    type: 'js',
+    description: 'TODO: one-line description of what this addon provides',
+    publisher: 'TODO: your name or org',
+    bundle: {
+      url: 'https://your-addon-cdn.example.com/bundle.js',
+      sha256: '',
+    },
+    capabilities: ['direct_stream'],
+  },
+
+  /**
+   * Scrapes and returns playable streams for a given movie or TV episode.
+   * Runs in Delulu Core's isolated QuickJS sandbox.
+   */
+  getStreams: async (req) => {
+    console.log(\`[${name}] Scraping streams for TMDB \${req.tmdbId} (\${req.mediaType})\`);
+
+    // In QuickJS, Web standard fetch() and native Servo-backed cheerio ($)
+    // are available globally with bare-metal speed:
+    // const res = await fetch('https://example.com/page');
+    // const html = await res.text();
+    // const $ = cheerio.load(html);
+    // const link = $('a.download-link').attr('href');
+
+    return [
+      {
+        type: 'direct',
+        title: 'Big Buck Bunny (Demo Stream)',
+        stream_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+        audio_languages: ['eng'],
+        resolution: '1080p',
+        media_format: 'mp4',
+      },
+    ];
+  },
+});
+`,
+    },
+    {
+      path: 'README.md',
+      content: `# ${name}
+
+A sandboxed JavaScript Delulu addon, built with \`@delulu-addon/dad-sdk\`.
+
+## Building the Bundle
+
+\`\`\`bash
+npm install
+npx dad bundle
+\`\`\`
+
+Compiles \`src/index.ts\` into a single monolithic \`dist/bundle.js\`, computes its
+SHA-256 hash, and automatically updates \`manifest.json\`.
+
+## Testing Locally
+
+\`\`\`bash
+npx dad test
+\`\`\`
+
+Tests your scraper against public-domain test fixtures (*Big Buck Bunny*, *The Beverly Hillbillies*)
+inside an isolated sandbox environment.
+
+## Publishing
+
+Upload \`dist/bundle.js\` to any HTTPS CDN (GitHub Releases, Cloudflare R2, AWS S3, etc.).
+Update the \`bundle.url\` in \`manifest.json\` to your CDN URL, and distribute your \`manifest.json\`.
 `,
     },
   ];

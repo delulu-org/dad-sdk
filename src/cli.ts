@@ -6,6 +6,7 @@ import { validateManifest } from './manifest.js';
 import { runInit } from './cli/init.js';
 import { runDev } from './cli/dev.js';
 import { runTest } from './cli/probe.js';
+import { runBundle } from './cli/bundle.js';
 
 async function runValidate(targetDir: string = process.cwd()) {
   const manifestPath = path.join(targetDir, 'manifest.json');
@@ -81,7 +82,7 @@ async function main() {
       await runValidate(positional[0] ? path.resolve(positional[0]) : process.cwd());
       break;
     case 'init':
-      await runInit(positional[0], { id: flags.id, name: flags.name });
+      await runInit(positional[0], { id: flags.id, name: flags.name, type: flags.type });
       break;
     case 'dev':
       await runDev(positional[0] ? path.resolve(positional[0]) : process.cwd(), {
@@ -90,8 +91,8 @@ async function main() {
       break;
     case 'test':
       if (!positional[0]) {
-        console.error(` Error: 'dad test' requires a manifest.json URL.`);
-        console.error(` Usage: dad test https://your-addon.example.com/manifest.json [--key <api-key>]`);
+        console.error(` Error: 'dad test' requires a target (manifest URL, manifest.json, or bundle.js).`);
+        console.error(` Usage: dad test <manifest-url|manifest.json|bundle.js> [--key <api-key>]`);
         process.exitCode = 1;
         break;
       }
@@ -99,43 +100,51 @@ async function main() {
       // for CI/shell use (argv shows up in shell history/logs).
       await runTest(positional[0], flags.key ?? process.env.DAD_TEST_API_KEY);
       break;
+    case 'bundle':
+    case 'build':
+      await runBundle(positional[0], {
+        out: flags.out,
+        manifest: flags.manifest,
+        minify: flags.minify === 'true',
+      });
+      break;
     case 'help':
     default:
       console.log(`
 Delulu Addon Development (DAD) CLI
 
-DAD supports HTTP addons only - a server you host and control.
+DAD supports HTTP addons (remote web services) and Sandboxed JS addons (QuickJS).
 
 Getting started:
-  dad init <dir> [--id <reverse.dns.id>] [--name "Display Name"]
-                        Scaffold a new HTTP addon
+  dad init <dir> [--type <http|js>] [--id <reverse.dns.id>] [--name "Display Name"]
+                        Scaffold a new HTTP or Sandboxed JS addon
 
-Developing:
+Developing HTTP addons:
   dad dev [dir]          Start a real local HTTP server for your addon and print
                          ready-to-run curl commands for every declared capability.
                          [--port <n>]  Port to listen on (default 7890)
 
-Testing a live addon:
-  dad test <manifest-url>  Validate a DEPLOYED addon from its public manifest:
-                         fetches {baseUrl}/manifest.json and probes every declared
-                         capability using public-domain fixtures (Big Buck Bunny,
-                         Sintel, ...) - the exact request shapes Delulu Core sends.
-[--key <api-key>]  Test the AUTHENTICATED path - sends
-                          Authorization: Bearer <api-key> on every probe. Without
-                          it, only the graceful-rejection path is tested (no key
-                          given -> unauthorized is expected and passes; WITH --key,
-                          an unauthorized response means the key gate is broken).
-                          Only content_unavailable/rate_limited errors pass a
-                          probe; internal_error, upstream_unreachable,
-                          invalid_response, not_found, bad_request and
-                          method_not_allowed FAIL it - they mean the addon
-                          itself is broken.
-                          (or set DAD_TEST_API_KEY - safer for CI/shell history)
+Bundling JS addons:
+  dad bundle [entry]     Compile a TypeScript/JavaScript scraper into a single
+                         monolithic bundle.js, compute its SHA-256 hash, and
+                         sync manifest.json.
+                         [--out <path>]       Output bundle path (default dist/bundle.js)
+                         [--manifest <path>]  Path to manifest.json to sync SHA-256
+                         [--minify]           Minify the bundle
+
+Testing addons:
+  dad test <target>      Validate an addon using public-domain test fixtures.
+                         Targets:
+                           - Remote manifest URL: https://addon.example.com/manifest.json
+                           - Local manifest: ./manifest.json
+                           - Local bundle:   ./dist/bundle.js
+                         [--key <api-key>]  Test the AUTHENTICATED path with API key
+                         (or set DAD_TEST_API_KEY in environment)
 
 Shipping:
   dad validate [dir]     Validate manifest.json schema
 
-  dad help                Show this help message
+  dad help               Show this help message
 `);
       break;
   }

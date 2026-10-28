@@ -1,4 +1,4 @@
-import { HttpDadManifest, DadCapability, validateManifest, withDefaultLogo } from './manifest.js';
+import { HttpDadManifest, JsDadManifest, DadManifest, DadCapability, validateManifest, withDefaultLogo } from './manifest.js';
 import { DadError, DadErrorCode, DAD_ERROR_STATUS, isErrorResponse, looksLikeErrorPayload, validateErrorResponse } from './errors.js';
 import {
   DadRequest,
@@ -25,6 +25,12 @@ export interface DadAddonHandlers {
 export interface HttpAddonDefinition extends DadAddonHandlers {
   manifest: HttpDadManifest;
 }
+
+export interface JsAddonDefinition extends DadAddonHandlers {
+  manifest: JsDadManifest;
+}
+
+export type AnyAddonDefinition = HttpAddonDefinition | JsAddonDefinition;
 
 /**
  * Optional operational hooks for the HTTP adapter. The default deliberately
@@ -54,8 +60,18 @@ const CAPABILITY_HANDLERS: Record<DadCapability, keyof DadAddonHandlers> = {
  *  3. Every implemented handler must be covered by a declared capability.
  * Catches misconfigured addons before they ever reach Delulu Core.
  */
-function assertAddonDefinition(def: HttpAddonDefinition): void {
-  const manifestCheck = validateManifest(def.manifest);
+function assertAddonDefinition(def: AnyAddonDefinition): void {
+  // At define time in source code, if JS addon manifest has an empty sha256 or bundle url,
+  // provide a placeholder so developers don't have a circular hash dependency before bundling.
+  let manifestToCheck = def.manifest;
+  if (manifestToCheck.type === 'js' && manifestToCheck.bundle) {
+    const b = manifestToCheck.bundle;
+    const sha = (!b.sha256 || b.sha256.trim() === '') ? '0'.repeat(64) : b.sha256;
+    const url = (!b.url || b.url.trim() === '') ? 'https://localhost/bundle.js' : b.url;
+    manifestToCheck = { ...manifestToCheck, bundle: { ...b, url, sha256: sha } };
+  }
+
+  const manifestCheck = validateManifest(manifestToCheck);
   if (!manifestCheck.valid) {
     throw new TypeError(
       `DAD addon '${def.manifest.id}' has an invalid manifest: ${manifestCheck.errors.join('; ')}`
@@ -101,6 +117,40 @@ export function defineHttpAddon(def: HttpAddonDefinition): HttpAddonDefinition {
   const normalized = { ...def, manifest: withDefaultLogo(def.manifest) };
   assertAddonDefinition(normalized);
   return normalized;
+}
+
+/**
+ * Define a type-safe JavaScript DAD Addon for execution inside Delulu Core's QuickJS sandbox.
+ * `logo` is guaranteed non-null: the developer's own logo when provided,
+ * otherwise the DAD default (`withDefaultLogo`).
+ * Enforces manifest validity and capability <-> handler consistency at definition time.
+ */
+export function defineJsAddon(def: JsAddonDefinition): JsAddonDefinition {
+  const normalized: JsAddonDefinition = { ...def, manifest: withDefaultLogo(def.manifest) };
+  assertAddonDefinition(normalized);
+
+  // If running in CommonJS environment, also attach handlers to module.exports if present
+  const gMod = typeof globalThis !== 'undefined' ? (globalThis as any).module : undefined;
+  if (gMod && gMod.exports) {
+    if (normalized.getStreams) gMod.exports.getStreams = normalized.getStreams;
+    if (normalized.getMeta) gMod.exports.getMeta = normalized.getMeta;
+    if (normalized.getSubtitles) gMod.exports.getSubtitles = normalized.getSubtitles;
+    gMod.exports.manifest = normalized.manifest;
+  }
+  return normalized;
+}
+
+/**
+ * Universal defineAddon helper that automatically delegates to `defineJsAddon`
+ * or `defineHttpAddon` based on `manifest.type`.
+ */
+export function defineAddon(def: HttpAddonDefinition): HttpAddonDefinition;
+export function defineAddon(def: JsAddonDefinition): JsAddonDefinition;
+export function defineAddon(def: AnyAddonDefinition): AnyAddonDefinition {
+  if (def.manifest.type === 'js') {
+    return defineJsAddon(def as JsAddonDefinition);
+  }
+  return defineHttpAddon(def as HttpAddonDefinition);
 }
 
 const CORS_HEADERS = {
@@ -179,7 +229,7 @@ function errorOrMalformedError(raw: unknown): Response | null {
  * design (no artifact to protect); this server only serves data.
  * HARDENED extensionless, path-segment routes (Strictly GET):
  * - GET /streams/{media_type}/{tmdb_id}[/{season}[/{episode}]]  -> Resolves streams
- * - GET /meta/{media_type}/{tmdb_id}[/{season}[/{episode}]]    -> Resolves meta (per-season trailers!)
+ * - GET /meta/{media_type}/{tmdb_id}[/{season}]                 -> Resolves meta (per-season trailers & episode ratings)
  * - GET /subtitles/{media_type}/{tmdb_id}[/{season}[/{episode}]] -> Resolves subtitles (per-episode)
  * - OPTIONS *                                                   -> CORS preflight
  *
@@ -290,6 +340,11 @@ export function createHttpAddonHandler(
       //   5 segments -> season+episode (e.g. /subtitles/tv/{tmdb_id}/{season}/{episode})
       if (segments.length > 5) {
         return fail(`Malformed DAD request - too many segments. Max is '/${route}/{media_type}/{tmdb_id}/{season}/{episode}'`);
+      }
+      if (route === 'meta' && segments.length > 4) {
+        return fail(
+          `Episode-level requests are forbidden on /meta. Query the season ('/meta/tv/{tmdb_id}/{season}') to receive all episode ratings at once.`
+        );
       }
       if (segments.length >= 4) {
         if (!/^\d+$/.test(segments[3])) {

@@ -30,7 +30,7 @@ export const CAPABILITY_ROUTES: Record<DadCapability, DadRoute> = {
 };
 
 import { isValidVersion } from './version.js';
-import { isHttpsUrl, isBareHttpsUrl, validateApiKeyShape } from './validation.js';
+import { isHttpsUrl, isBareHttpsUrl, validateApiKeyShape, isValidSha256 } from './validation.js';
 
 /**
  * Fallback logo URL injected into any addon manifest that does not ship its
@@ -139,12 +139,36 @@ export interface HttpDadManifest extends BaseDadManifest {
 }
 
 /**
- * DAD addon manifest. Currently always an HTTP manifest - kept as an alias
- * (rather than collapsing straight to `HttpDadManifest`) so a future addon
- * type can be added back as a union member without breaking callers that
- * already write `DadManifest`.
+ * Specification of the single bundled JavaScript payload for sandboxed JS addons.
  */
-export type DadManifest = HttpDadManifest;
+export interface JsBundle {
+  /** URL where the single monolithic .js bundle file is hosted (HTTPS) */
+  url: string;
+
+  /** Expected SHA-256 hash (64 lowercase hexadecimal characters) */
+  sha256: string;
+}
+
+/**
+ * JavaScript DAD Addon Manifest (`type: "js"`).
+ *
+ * Runs inside Delulu Core's embedded QuickJS sandbox. Single monolithic bundle
+ * with author-declared SHA-256 integrity verification.
+ */
+export interface JsDadManifest extends BaseDadManifest {
+  type: 'js';
+
+  /** Specification of the single bundled JavaScript payload */
+  bundle: JsBundle;
+
+  /** Optional single API key delivery (provided to getStreams/getMeta/getSubtitles) */
+  apiKey?: DadApiKey;
+}
+
+/**
+ * DAD addon manifest. Supported types: 'http' (remote web service) and 'js' (sandboxed QuickJS bundle).
+ */
+export type DadManifest = HttpDadManifest | JsDadManifest;
 
 /**
  * Reverse-DNS namespace reserved for Delulu's own official addons. No other
@@ -237,19 +261,19 @@ export function validateManifest(raw: unknown): { valid: boolean; errors: string
     }
   }
 
-  if (m.type !== 'http') {
-    errors.push("Invalid 'type'. Must be 'http' - DAD only supports HTTP addons.");
-  } else {
-    if (!m.baseUrl || typeof m.baseUrl !== 'string') {
+  if (m.type === 'http') {
+    const baseUrl = m.baseUrl !== undefined ? m.baseUrl : m.base_url;
+    if (!baseUrl || typeof baseUrl !== 'string') {
       errors.push("HTTP addon requires 'baseUrl' string URL");
-    } else if (!isBareHttpsUrl(m.baseUrl)) {
+    } else if (!isBareHttpsUrl(baseUrl)) {
       errors.push(
         "HTTP addon 'baseUrl' must be a bare HTTPS origin URL - no path, no query string, no fragment (e.g. 'https://addon.example.com'). " +
           "The addon's routes live directly under it: {baseUrl}/streams/... and its manifest at {baseUrl}/manifest.json."
       );
     }
-    if (m.apiKey !== undefined) {
-      errors.push(...validateApiKeyShape(m.apiKey, 'apiKey'));
+    const apiKey = m.apiKey !== undefined ? m.apiKey : m.api_key;
+    if (apiKey !== undefined) {
+      errors.push(...validateApiKeyShape(apiKey, 'apiKey'));
     }
     if (m.signature !== undefined || m.publicKeyId !== undefined) {
       // v1 fields; naming them turns a puzzling error into an obvious fix.
@@ -257,6 +281,31 @@ export function validateManifest(raw: unknown): { valid: boolean; errors: string
         "HTTP addons are NOT signed - remove 'signature' and 'publicKeyId'. They were v1 fields and carry no meaning in v2."
       );
     }
+  } else if (m.type === 'js') {
+    if (m.baseUrl !== undefined || m.base_url !== undefined) {
+      errors.push("JS addons do not use 'baseUrl' - remove 'baseUrl' and configure 'bundle.url' instead.");
+    }
+    if (!m.bundle || typeof m.bundle !== 'object' || Array.isArray(m.bundle)) {
+      errors.push("JS addon requires 'bundle' object with 'url' (https string) and 'sha256' (64 lowercase hex characters)");
+    } else {
+      if (!m.bundle.url || typeof m.bundle.url !== 'string' || !isHttpsUrl(m.bundle.url)) {
+        errors.push("JS addon 'bundle.url' must be a valid HTTPS URL pointing to the bundle.js file");
+      }
+      if (!m.bundle.sha256 || typeof m.bundle.sha256 !== 'string' || !isValidSha256(m.bundle.sha256)) {
+        errors.push("JS addon 'bundle.sha256' must be exactly 64 lowercase hexadecimal characters");
+      }
+    }
+    const apiKey = m.apiKey !== undefined ? m.apiKey : m.api_key;
+    if (apiKey !== undefined) {
+      errors.push(...validateApiKeyShape(apiKey, 'apiKey'));
+    }
+    if (m.signature !== undefined || m.publicKeyId !== undefined || m.platform_assets !== undefined || m.target !== undefined) {
+      errors.push(
+        "JavaScript addons are sandboxed and NOT signed - remove signing fields ('signature', 'publicKeyId', 'platform_assets')."
+      );
+    }
+  } else {
+    errors.push("Invalid 'type'. Must be 'http' or 'js'.");
   }
 
   return { valid: errors.length === 0, errors };

@@ -38,6 +38,14 @@ export function isBareHttpsUrl(value: unknown): value is string {
 }
 
 /**
+ * True only for a valid 64-character lowercase hexadecimal SHA-256 hash.
+ */
+export function isValidSha256(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  return /^[a-f0-9]{64}$/.test(value);
+}
+
+/**
  * Validates the `{ required: boolean, pageUrl: <https url> }` apiKey shape
  * used by manifest.ts (an addon's own apiKey field). `label` prefixes each
  * error so call sites can say `apiKey` as fits their context.
@@ -52,7 +60,8 @@ export function validateApiKeyShape(value: unknown, label = 'apiKey'): string[] 
   if (typeof ak.required !== 'boolean') {
     errors.push(`'${label}.required' must be a boolean`);
   }
-  if (!isHttpsUrl(ak.pageUrl)) {
+  const pageUrl = ak.pageUrl !== undefined ? ak.pageUrl : ak.page_url;
+  if (!isHttpsUrl(pageUrl)) {
     errors.push(`'${label}.pageUrl' must be an HTTPS URL`);
   }
   return errors;

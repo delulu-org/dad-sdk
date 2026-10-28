@@ -17,7 +17,9 @@
  * (Big Buck Bunny, Sintel, ...) - never with copyrighted titles.
  */
 
-import { validateManifest, CAPABILITY_ROUTES, type DadCapability, type DadRoute } from '../manifest.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { validateManifest, CAPABILITY_ROUTES, type DadCapability, type DadRoute, type JsDadManifest } from '../manifest.js';
 import { isErrorResponse, validateErrorResponse } from '../errors.js';
 import {
   validateMetaResponse,
@@ -28,6 +30,7 @@ import {
 } from '../responses.js';
 import type { DadTestFixture } from '../fixtures.js';
 import { DAD_TEST_FIXTURES } from '../fixtures.js';
+import { testJsAddon } from './probe_js.js';
 
 interface ProbeResult {
   route: DadRoute;
@@ -293,11 +296,12 @@ export async function testAddon(
   }
 
   for (const fixture of fixtures) {
-    const segs = [`${fixture.media_type}`, String(fixture.tmdb_id)];
-    if (fixture.s !== undefined) segs.push(String(fixture.s));
-    if (fixture.e !== undefined) segs.push(String(fixture.e));
-
     for (const [route, caps] of routeCapabilities) {
+      const segs = [`${fixture.media_type}`, String(fixture.tmdb_id)];
+      if (fixture.s !== undefined) segs.push(String(fixture.s));
+      // /meta requests strictly support up to season level: episode is forbidden on meta routes
+      if (route !== 'meta' && fixture.e !== undefined) segs.push(String(fixture.e));
+
       const url = `${origin}/${route}/${segs.join('/')}`;
       const label = `${fixture.title} - ${route}/${segs.join('/')} (${caps.join('+')})`;
 
@@ -335,10 +339,78 @@ const STATUS_MARK: Record<ProbeResult['status'], string> = {
   fail: STATUS_MARKS[2],
 };
 
-export async function runTest(manifestUrl: string, apiKey?: string): Promise<void> {
-  let out: Awaited<ReturnType<typeof testAddon>>;
+export async function runTest(target: string, apiKey?: string): Promise<void> {
+  let out: {
+    manifest: { name: string; id: string; capabilities: DadCapability[] };
+    results: ProbeResult[];
+    producedData: boolean;
+    warnings: string[];
+    gateExercisedOnly: boolean;
+  };
+
   try {
-    out = await testAddon(manifestUrl, DAD_TEST_FIXTURES, apiKey);
+    const isUrl = /^https?:\/\//i.test(target);
+    if (isUrl) {
+      // First fetch the target manifest
+      const { data } = await fetchJson(target, apiKey);
+      if (data && typeof data === 'object' && (data as any).type === 'js') {
+        const jsManifest = data as JsDadManifest;
+        // Fetch bundle code
+        const bundleRes = await fetch(jsManifest.bundle.url, { signal: AbortSignal.timeout(15000) });
+        if (!bundleRes.ok) {
+          throw new Error(`Failed to fetch bundle from '${jsManifest.bundle.url}': ${bundleRes.status}`);
+        }
+        const bundleCode = await bundleRes.text();
+        out = await testJsAddon(jsManifest, bundleCode, DAD_TEST_FIXTURES, apiKey);
+      } else {
+        out = await testAddon(target, DAD_TEST_FIXTURES, apiKey);
+      }
+    } else {
+      // Local target
+      const resolved = path.resolve(process.cwd(), target);
+      let manifestPath: string | null = null;
+      let bundlePath: string | null = null;
+
+      if (fs.existsSync(resolved)) {
+        const stat = fs.statSync(resolved);
+        if (stat.isDirectory()) {
+          manifestPath = path.join(resolved, 'manifest.json');
+          bundlePath = path.join(resolved, 'dist', 'bundle.js');
+          if (!fs.existsSync(bundlePath)) bundlePath = path.join(resolved, 'bundle.js');
+        } else if (resolved.endsWith('.json')) {
+          manifestPath = resolved;
+          bundlePath = path.join(path.dirname(resolved), 'dist', 'bundle.js');
+          if (!fs.existsSync(bundlePath)) bundlePath = path.join(path.dirname(resolved), 'bundle.js');
+        } else if (resolved.endsWith('.js')) {
+          bundlePath = resolved;
+          const candidateManifest = path.join(path.dirname(resolved), 'manifest.json');
+          if (fs.existsSync(candidateManifest)) {
+            manifestPath = candidateManifest;
+          } else {
+            const rootManifest = path.join(process.cwd(), 'manifest.json');
+            if (fs.existsSync(rootManifest)) manifestPath = rootManifest;
+          }
+        }
+      }
+
+      if (!manifestPath || !fs.existsSync(manifestPath)) {
+        throw new Error(`Could not find manifest.json for local target '${target}'`);
+      }
+
+      const manifestRaw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      if (manifestRaw.type === 'js') {
+        if (!bundlePath || !fs.existsSync(bundlePath)) {
+          throw new Error(`Could not locate bundle.js. Run 'dad bundle' first to compile your addon.`);
+        }
+        const bundleCode = fs.readFileSync(bundlePath, 'utf-8');
+        out = await testJsAddon(manifestRaw as JsDadManifest, bundleCode, DAD_TEST_FIXTURES, apiKey);
+      } else if (manifestRaw.type === 'http') {
+        const probeUrl = `${manifestRaw.baseUrl.replace(/\/+$/, '')}/manifest.json`;
+        out = await testAddon(probeUrl, DAD_TEST_FIXTURES, apiKey);
+      } else {
+        throw new Error(`Unknown manifest type '${manifestRaw.type}' in ${manifestPath}`);
+      }
+    }
   } catch (e: any) {
     console.error(`\n DAD test FAILED: ${e.message}`);
     process.exitCode = 1;

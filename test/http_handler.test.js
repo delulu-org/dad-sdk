@@ -162,6 +162,13 @@ test('meta and subtitle routes accept season/episode - per-season trailers, per-
   // Whole-show meta and subtitles still work without season/episode
   await handler(new Request('https://addon.example.com/meta/tv/10378'));
   assert.equal(lastMetaReq.s, undefined);
+
+  // Episode-level requests on /meta are strictly forbidden (400 Bad Request)
+  const episodeMeta = await handler(new Request('https://addon.example.com/meta/tv/10378/3/2'));
+  assert.equal(episodeMeta.status, 400);
+  const badMetaBody = await episodeMeta.json();
+  assert.equal(badMetaBody.error, 'bad_request');
+  assert.ok(badMetaBody.error_message.includes('Episode-level requests are forbidden on /meta'));
 });
 
 test('api key is injected as req.auth from Authorization: Bearer', async () => {

@@ -39,7 +39,7 @@ function startAddonServer(manifest = VALID_MANIFEST) {
   const routes = {
     '/streams/movie/10378': [{ type: 'direct', title: '1080p', stream_url: 'https://cdn.example.com/movie.mp4', audio_languages: [] }],
     '/streams/movie/45745': [{ type: 'direct', title: '720p', stream_url: 'https://cdn.example.com/movie2.mp4', audio_languages: [] }],
-    '/meta/movie/10378': { imdb_id: 'tt1254207', imdb_rating: 6.4 },
+    '/meta/movie/10378': { imdb_id: 'tt1254207', overall_imdb_rating: 6.4 },
     '/meta/movie/45745': { imdb_id: 'tt1727587' },
     '/subtitles/movie/10378': [
       {

@@ -1,22 +1,39 @@
 # @delulu-addon/dad-sdk
 
-The **Delulu Addon Development (DAD) SDK** - build, test, and ship HTTP
-addons for Delulu.
+The **Delulu Addon Development (DAD) SDK** — build, bundle, test, and ship streaming addons for Delulu.
 
 ```bash
 npm install @delulu-addon/dad-sdk
 ```
 
-> **Only HTTP addons are publicly supported.** DAD addons run as a live
-> HTTPS server you host and control.
+DAD supports two primary addon architectures:
+1. **Sandboxed JavaScript Addons (`type: "js"`):** Client-side scrapers executing inside Delulu Core's embedded QuickJS runtime. Zero hosting costs, lightweight single-file distribution, backed by native Rust hardware crypto and Mozilla Servo-powered DOM parsing.
+2. **HTTP Addons (`type: "http"`):** Remote microservices hosted on Cloudflare Workers, Node.js, Go, Python, or Rust.
 
 ---
 
-## Quick start
+## Quick Start: Sandboxed JavaScript Addon (Recommended)
 
 ```bash
-npx @delulu-addon/dad-sdk init my-addon --name "My Addon"
-cd my-addon
+# 1. Scaffold a new JS scraper addon
+npx @delulu-addon/dad-sdk init my-scraper --type js --name "My Scraper"
+cd my-scraper
+npm install
+
+# 2. Bundle into a single monolithic bundle.js with SHA-256 calculation
+npx dad bundle
+
+# 3. Test locally against public-domain test fixtures (Big Buck Bunny, etc.)
+npx dad test
+```
+
+---
+
+## Quick Start: HTTP Addon
+
+```bash
+npx @delulu-addon/dad-sdk init my-http-addon --type http --name "My HTTP Addon"
+cd my-http-addon
 npm install
 npm run build
 npx dad dev
@@ -49,7 +66,7 @@ declares in its manifest:
 
 | Capability | Handler | Called when |
 |---|---|---|
-| `meta` | `getMeta(req)` | Client wants a logo, trailer, IMDb id/rating - things TMDB doesn't already give it |
+| `meta` | `getMeta(req)` | Client wants IMDb id, overall IMDb rating, season episode ratings, or trailers |
 | `direct_stream` | `getStreams(req)` | Client wants playable stream URLs |
 | `torrent` | `getStreams(req)` | Same handler, torrent-shaped items |
 | `subtitle` | `getSubtitles(req)` | Client wants subtitle tracks |
@@ -197,15 +214,16 @@ error message, not a runtime crash somewhere downstream.
 
 ```ts
 interface DadMetaResponse {
-  imdb_id?: string | null;    // 'tt0137523'
-  imdb_rating?: number | null; // 8.8 - MUST be a number, not "8.8"
-  trailers?: string[];         // HTTPS URLs, ordered - FIRST is the default
+  imdb_id?: string | null;                              // 'tt0137523'
+  overall_imdb_rating?: number | null;                  // 8.8 - MUST be a number between 0.0 and 10.0, not "8.8"
+  episode_imdb_ratings?: Record<number, number> | null; // { 1: 8.5, 2: 9.0 } for TV season requests
+  trailers?: string[];                                  // HTTPS URLs, ordered - FIRST is the default
 }
 ```
 
 Every field is optional and nullable - Delulu Core already has poster,
 backdrop, overview, title, cast, and the title logo from TMDB. Meta addons only
-fill in what TMDB doesn't carry: IMDb ID, IMDb rating, and official trailers.
+fill in what TMDB doesn't carry: IMDb ID, overall IMDb rating, season episode ratings, and official trailers.
 
 `trailers` is an ordered array: the first entry is the default the client
 plays. `[]`/absent/`null` all mean "no trailer". Deliver the most adaptive
@@ -337,7 +355,7 @@ are strict, extensionless path segments, GET only:
 
 ```
 GET {baseUrl}/streams/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
-GET {baseUrl}/meta/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
+GET {baseUrl}/meta/{movie|tv}/{tmdb_id}[/{season}]
 GET {baseUrl}/subtitles/{movie|tv}/{tmdb_id}[/{season}[/{episode}]]
 GET {baseUrl}/manifest.json   # served by the handler itself (see below)
 ```
@@ -360,9 +378,10 @@ you write a line of code:
 | `id` | yes | Reverse-DNS id (e.g. `com.yourname.my-addon`). Don't rename after publishing. The `org.delulu.` namespace is **sealed** - reserved for Delulu's own addons. |
 | `name` | yes | Display name in the client. |
 | `version` | yes | Strict `major.minor.patch`. |
-| `type` | yes | Always `"http"` - the only type DAD supports. |
-| `baseUrl` | yes | A bare HTTPS origin - **no path, no query string, no fragment** (`https://your-addon.example.com`). Routes live directly under it. |
-| `capabilities` | yes | Any of `meta`, `direct_stream`, `torrent`, `subtitle`. Every declared capability needs its matching handler, or `defineHttpAddon` throws. |
+| `type` | yes | Either `"http"` (remote web service) or `"js"` (sandboxed QuickJS scraper). |
+| `baseUrl` | yes (for `type: "http"`) | A bare HTTPS origin - **no path, no query string, no fragment** (`https://your-addon.example.com`). Routes live directly under it. |
+| `bundle` | yes (for `type: "js"`) | Object `{ url, sha256 }` pointing to the single monolithic bundle and its SHA-256 hash. Built and synced automatically with `dad bundle`. |
+| `capabilities` | yes | Any of `meta`, `direct_stream`, `torrent`, `subtitle`. Every declared capability needs its matching handler, or `defineHttpAddon`/`defineJsAddon` throws. |
 | `apiKey` | no | `{ required, pageUrl }` - the API-key gate. See below. |
 | `description` | no | One-line description. |
 | `publisher` | no | Your name or org. The name `delulu` is **sealed** - reserved for Delulu's own addons. |
@@ -423,25 +442,25 @@ and the manifest is fetched live and re-validated at install time.
 ## CLI reference
 
 ```
-dad init <dir> [--id <reverse.dns.id>] [--name "Name"]
-                        Scaffold a new HTTP addon
+dad init <dir> [--type <http|js>] [--id <reverse.dns.id>] [--name "Name"]
+                        Scaffold a new HTTP or Sandboxed JS addon
 
 dad dev [dir] [--port <n>]
                         Start a real local server and print ready-to-run curl commands
 
-dad test <manifest-url> [--key <api-key>]
-                        Validate a DEPLOYED addon from its public manifest:
-                        fetches the manifest, checks it declares the same host
-                        it is served from, then probes every declared
-                        capability using public-domain fixtures (Big Buck Bunny,
-                        Sintel, The Beverly Hillbillies, ...) - no copyrighted
-                        titles are ever requested. --key sends
-                        Authorization: Bearer <key> to test the AUTHENTICATED
-                        path (or set DAD_TEST_API_KEY instead of passing --key
-                        on the command line - safer for shell history/CI logs).
+dad bundle [entry] [--out <path>] [--manifest <path>] [--minify]
+                        Compile a TypeScript/JavaScript scraper into a single monolithic
+                        bundle.js, compute its SHA-256 hash, and sync manifest.json
+
+dad test <target> [--key <api-key>]
+                        Validate an addon using public-domain test fixtures.
+                        Target can be a remote manifest URL (https://...),
+                        local manifest (./manifest.json), or bundle (./dist/bundle.js).
+                        --key sends Authorization: Bearer <key> to test the
+                        AUTHENTICATED path (or set DAD_TEST_API_KEY).
 
 dad validate [dir]      Validate manifest.json schema
-dad help                 Show all of the above
+dad help                Show all of the above
 ```
 
 `dad test` runs the exact validators `createHttpAddonHandler` uses in
@@ -522,7 +541,7 @@ Everything is exported from the package root:
 
 ```ts
 import {
-  defineHttpAddon, createHttpAddonHandler,
+  defineHttpAddon, defineJsAddon, createHttpAddonHandler,
   DadError, DAD_ERROR_STATUS,
   validateManifest, usesReservedId, RESERVED_ID_PREFIX, RESERVED_PUBLISHER,
   validateStreamItems, validateMetaResponse, validateSubtitleItems,

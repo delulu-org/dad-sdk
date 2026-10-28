@@ -32,8 +32,8 @@ export interface DadRequest {
  * Meta Addon Response.
  * Core app already gets poster, backdrop, overview, title, cast, and the title
  * logo straight from TMDB. Meta addons are called strictly to enrich the
- * signals TMDB does not carry: IMDb ID mapping, IMDb rating, and official
- * trailer URL(s).
+ * signals TMDB does not carry: IMDb ID mapping, overall IMDb rating,
+ * per-season episode ratings, and official trailer URL(s).
  *
  * Every field is optional; `null` and absent both mean "unknown / not found".
  */
@@ -42,12 +42,20 @@ export interface DadMetaResponse {
   imdb_id?: string | null;
 
   /**
-   * Canonical IMDb community rating as a NUMBER (e.g. 8.8).
+   * Title-level aggregate IMDb community rating as a NUMBER between 0.0 and 10.0 (e.g. 9.5).
    * UNIFIED FORM: an addon MUST normalize before returning - parseFloat any
-   * string rating it receives from an upstream source. Returning a string is
-   * a type violation. `null` when unknown.
+   * string rating it receives from an upstream source. Returning a string or a value
+   * outside [0.0, 10.0] is a contract violation. `null` when unknown.
    */
-  imdb_rating?: number | null;
+  overall_imdb_rating?: number | null;
+
+  /**
+   * Episode IMDb community ratings for the requested season.
+   * Key: Episode number as positive integer (e.g. 1, 2, ...).
+   * Value: IMDb community rating as a NUMBER between 0.0 and 10.0 inclusive.
+   * Present only when 's' (season) is requested for TV. `null` or absent when unknown.
+   */
+  episode_imdb_ratings?: Record<number, number> | null;
 
   /**
    * Official trailer URLs, ordered by preference - the FIRST entry is the
@@ -71,14 +79,60 @@ export function validateMetaResponse(raw: unknown): { valid: boolean; errors: st
   const m = raw as Record<string, any>;
   const errors: string[] = [];
 
-  if (m.imdb_id !== undefined && m.imdb_id !== null && typeof m.imdb_id !== 'string') {
+  const imdb_id = m.imdb_id !== undefined ? m.imdb_id : m.imdbId;
+  if (imdb_id !== undefined && imdb_id !== null && typeof imdb_id !== 'string') {
     errors.push(`'imdb_id' must be a string`);
   }
-  if (m.imdb_rating !== undefined && m.imdb_rating !== null) {
-    if (typeof m.imdb_rating !== 'number' || isNaN(m.imdb_rating)) {
-      errors.push(`'imdb_rating' must be a number - normalize string ratings (e.g. parseFloat) before returning`);
+
+  // Reject deprecated 'imdb_rating' with clear migration guidance
+  if (m.imdb_rating !== undefined || m.imdbRating !== undefined) {
+    errors.push(
+      `'imdb_rating' has been renamed to 'overall_imdb_rating' to explicitly represent the title-level IMDb rating.`
+    );
+  }
+
+  // Enforce overall_imdb_rating: positive float 0.0 to 10.0
+  const overall_imdb_rating = m.overall_imdb_rating !== undefined ? m.overall_imdb_rating : m.overallImdbRating;
+  if (overall_imdb_rating !== undefined && overall_imdb_rating !== null) {
+    if (typeof overall_imdb_rating !== 'number' || !Number.isFinite(overall_imdb_rating)) {
+      errors.push(
+        `'overall_imdb_rating' must be a number - normalize string ratings (e.g. parseFloat) before returning`
+      );
+    } else if (overall_imdb_rating < 0 || overall_imdb_rating > 10) {
+      errors.push(
+        `'overall_imdb_rating' must be between 0.0 and 10.0 inclusive (received ${overall_imdb_rating})`
+      );
     }
   }
+
+  // Enforce episode_imdb_ratings: map of positive integer -> float 0.0 to 10.0
+  const episode_imdb_ratings = m.episode_imdb_ratings !== undefined ? m.episode_imdb_ratings : m.episodeImdbRatings;
+  if (episode_imdb_ratings !== undefined && episode_imdb_ratings !== null) {
+    if (typeof episode_imdb_ratings !== 'object' || Array.isArray(episode_imdb_ratings)) {
+      errors.push(
+        `'episode_imdb_ratings' must be an object map of episode numbers to ratings (e.g. { 1: 9.0, 2: 8.7 }) or null`
+      );
+    } else {
+      for (const [epKey, rating] of Object.entries(episode_imdb_ratings)) {
+        const epNum = Number(epKey);
+        if (!Number.isInteger(epNum) || epNum < 1 || !/^[1-9]\d*$/.test(epKey)) {
+          errors.push(
+            `'episode_imdb_ratings' key '${epKey}' is invalid - episode numbers must be positive integers >= 1`
+          );
+        }
+        if (typeof rating !== 'number' || !Number.isFinite(rating)) {
+          errors.push(
+            `'episode_imdb_ratings' for episode ${epKey} must be a number - normalize string ratings (e.g. parseFloat) before returning`
+          );
+        } else if (rating < 0 || rating > 10) {
+          errors.push(
+            `'episode_imdb_ratings' for episode ${epKey} must be between 0.0 and 10.0 inclusive (received ${rating})`
+          );
+        }
+      }
+    }
+  }
+
   if (m.trailers !== undefined && m.trailers !== null) {
     if (!Array.isArray(m.trailers)) {
       errors.push(`'trailers' must be an array of HTTPS URL strings`);
@@ -325,7 +379,14 @@ const TRACKER_RE = /^(?:udp|tcp|wss|ws|https):\/\/[^\s]+$/i;
  * Fields that only exist for the torrent engine. Declared `never` on both
  * direct variants; checked by presence so `null`/`false`/`{}` cannot slip past.
  */
-const TORRENT_ONLY_FIELDS = ['info_hash', 'file_idx', 'trackers', 'seeders'] as const;
+const TORRENT_ONLY_FIELDS = [
+  'info_hash',
+  'infoHash',
+  'file_idx',
+  'fileIdx',
+  'trackers',
+  'seeders',
+] as const;
 
 /**
  * Validates a stream candidate against the playback contract:
@@ -359,11 +420,12 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
   // Presence test is `!== undefined`, not truthiness - `null` on a field the
   // contract declares inapplicable is still an error, not "unset".
   if (s.type === 'direct') {
-    if (!s.stream_url || typeof s.stream_url !== 'string' || s.stream_url.trim() === '') {
+    const stream_url = s.stream_url !== undefined ? s.stream_url : s.streamUrl;
+    if (!stream_url || typeof stream_url !== 'string' || stream_url.trim() === '') {
       errors.push(`Missing or invalid non-empty 'stream_url' string`);
-    } else if (!isHttpsUrl(s.stream_url)) {
+    } else if (!isHttpsUrl(stream_url)) {
       errors.push(
-        `Direct stream 'stream_url' must be an HTTPS URL - got '${truncateForError(s.stream_url)}'. ` +
+        `Direct stream 'stream_url' must be an HTTPS URL - got '${truncateForError(stream_url)}'. ` +
           `(javascript:, file:, and similar schemes are never valid stream URLs.)`
       );
     }
@@ -377,7 +439,7 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
       }
     }
   } else if (s.type === 'torrent') {
-    if (s.stream_url !== undefined) {
+    if (s.stream_url !== undefined || s.streamUrl !== undefined) {
       errors.push(
         `Torrent items must NOT carry 'stream_url' - a torrent has no playable URL; the peer swarm is the source. ` +
           `Send 'info_hash' (+ 'file_idx') instead.`
@@ -386,7 +448,8 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
   }
 
   if (s.type === 'direct') {
-    if (s.needs_proxy === true) {
+    const needs_proxy = s.needs_proxy !== undefined ? s.needs_proxy : s.needsProxy;
+    if (needs_proxy === true) {
       if (!s.headers || typeof s.headers !== 'object' || Array.isArray(s.headers)) {
         errors.push(`'needs_proxy: true' requires a non-empty 'headers' object (e.g. { Referer, User-Agent })`);
       } else {
@@ -408,33 +471,35 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
     if (s.headers !== undefined) {
       errors.push(`Torrent items must not carry 'headers' - torrents go to the torrent engine, not the proxy`);
     }
-    if (s.needs_proxy !== undefined) {
+    if (s.needs_proxy !== undefined || s.needsProxy !== undefined) {
       errors.push(
         `Torrent items must not set 'needs_proxy' (not even false) - torrents go to the torrent engine, not the proxy`
       );
     }
 
-    if (typeof s.info_hash !== 'string' || s.info_hash.trim() === '') {
+    const info_hash = s.info_hash !== undefined ? s.info_hash : s.infoHash;
+    if (typeof info_hash !== 'string' || info_hash.trim() === '') {
       errors.push(
         `Torrent items require an 'info_hash' - a torrent has no URL, so the BTIH hash is its identity ` +
           `(40-hex v1 or 64-hex v2)`
       );
-    } else if (!INFO_HASH_RE.test(s.info_hash)) {
+    } else if (!INFO_HASH_RE.test(info_hash)) {
       errors.push(
         `Torrent 'info_hash' must be 40 hex chars (v1) or 64 hex chars (v2), nothing else - got ` +
-          `'${truncateForError(s.info_hash)}'`
+          `'${truncateForError(info_hash)}'`
       );
     }
 
-    if (s.file_idx === undefined || s.file_idx === null) {
+    const file_idx = s.file_idx !== undefined ? s.file_idx : s.fileIdx;
+    if (file_idx === undefined || file_idx === null) {
       errors.push(
         `Torrent items require 'file_idx' - the zero-based index of the file you mean. ` +
           `Use 0 for a single-file torrent; for a season/episode pack it must be the exact episode requested.`
       );
-    } else if (typeof s.file_idx !== 'number' || !Number.isInteger(s.file_idx) || s.file_idx < 0) {
+    } else if (typeof file_idx !== 'number' || !Number.isInteger(file_idx) || file_idx < 0) {
       errors.push(
         `Torrent 'file_idx' must be a non-negative integer (use 0 for a single-file torrent) - got ` +
-          `${JSON.stringify(truncateForError(String(s.file_idx)))}`
+          `${JSON.stringify(truncateForError(String(file_idx)))}`
       );
     }
 
@@ -466,17 +531,18 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
   }
 
   // Shape is validated, content is not - see the field's doc comment.
-  if (s.audio_languages === undefined || s.audio_languages === null) {
+  const audio_languages = s.audio_languages !== undefined ? s.audio_languages : s.audioLanguages;
+  if (audio_languages === undefined || audio_languages === null) {
     errors.push(
       `Missing 'audio_languages' - it is required because every stream has audio. Use [] if you cannot tell.`
     );
-  } else if (!Array.isArray(s.audio_languages)) {
+  } else if (!Array.isArray(audio_languages)) {
     errors.push(
       `'audio_languages' must be an array of language names (e.g. ["English", "Hindi"]) - got ` +
-        `${JSON.stringify(truncateForError(String(s.audio_languages)))}`
+        `${JSON.stringify(truncateForError(String(audio_languages)))}`
     );
-  } else if (s.audio_languages.length > 0) {
-    const bad = s.audio_languages.find((l) => typeof l !== 'string' || l.trim() === '');
+  } else if (audio_languages.length > 0) {
+    const bad = audio_languages.find((l) => typeof l !== 'string' || l.trim() === '');
     if (bad !== undefined) {
       errors.push(
         `'audio_languages' must contain only non-empty language names - got ` +
@@ -485,8 +551,9 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
     }
   }
 
-  if (s.audio_format !== undefined && s.audio_format !== null) {
-    if (typeof s.audio_format !== 'string' || s.audio_format.trim() === '') {
+  const audio_format = s.audio_format !== undefined ? s.audio_format : s.audioFormat;
+  if (audio_format !== undefined && audio_format !== null) {
+    if (typeof audio_format !== 'string' || audio_format.trim() === '') {
       errors.push(`'audio_format' must be a non-empty string when present (e.g. "Dolby Atmos")`);
     }
   }
@@ -500,10 +567,21 @@ export function validateStreamItem(item: unknown): { valid: boolean; errors: str
   }
 
   // Type-checked only: deciding which formats are playable is the client's job.
-  for (const field of ['media_format', 'resolution'] as const) {
-    if (s[field] !== undefined && s[field] !== null && typeof s[field] !== 'string') {
-      errors.push(`'${field}' must be a string if present (got ${typeof s[field]})`);
+  for (const [snake, camel] of [
+    ['media_format', 'mediaFormat'],
+    ['resolution', 'resolution'],
+    ['codec', 'codec'],
+    ['hdr_format', 'hdrFormat'],
+  ] as const) {
+    const val = s[snake] !== undefined ? s[snake] : s[camel];
+    if (val !== undefined && val !== null && typeof val !== 'string') {
+      errors.push(`'${snake}' must be a string if present (got ${typeof val})`);
     }
+  }
+
+  const size_gb = s.size_gb !== undefined ? s.size_gb : s.sizeGb;
+  if (size_gb !== undefined && size_gb !== null && typeof size_gb !== 'number') {
+    errors.push(`'size_gb' must be a number if present (got ${typeof size_gb})`);
   }
 
   return { valid: errors.length === 0, errors };
@@ -592,7 +670,11 @@ export function validateSubtitleItems(items: unknown): { valid: boolean; errors:
       errors.push(`Subtitle item #${i + 1}: must be an object`);
       return;
     }
-    for (const field of ['id', 'lang_code', 'language', 'title'] as const) {
+    const lang_code = s.lang_code !== undefined ? s.lang_code : s.langCode;
+    if (typeof lang_code !== 'string' || lang_code.trim() === '') {
+      errors.push(`Subtitle item #${i + 1}: missing or invalid non-empty 'lang_code' string`);
+    }
+    for (const field of ['id', 'language', 'title'] as const) {
       if (typeof s[field] !== 'string' || s[field].trim() === '') {
         errors.push(`Subtitle item #${i + 1}: missing or invalid non-empty '${field}' string`);
       }
@@ -638,7 +720,7 @@ export function validateHealthPong(raw: unknown): { valid: boolean; errors: stri
   const errors: string[] = [];
   const obj = raw as Record<string, unknown>;
 
-  const allowedKeys = new Set(['ok', 'addon_id', 'name', 'version']);
+  const allowedKeys = new Set(['ok', 'addon_id', 'addonId', 'name', 'version']);
   for (const key of Object.keys(obj)) {
     if (!allowedKeys.has(key)) {
       errors.push(`Unknown field in health pong: '${key}'`);
@@ -649,7 +731,8 @@ export function validateHealthPong(raw: unknown): { valid: boolean; errors: stri
     errors.push("'ok' must be boolean true");
   }
 
-  if (typeof obj.addon_id !== 'string' || obj.addon_id.trim() === '') {
+  const addon_id = obj.addon_id !== undefined ? obj.addon_id : obj.addonId;
+  if (typeof addon_id !== 'string' || addon_id.trim() === '') {
     errors.push("Missing or invalid non-empty 'addon_id' string");
   }
 

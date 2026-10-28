@@ -1,7 +1,7 @@
 {
   "name": "@delulu-addon/dad-sdk",
-  "version": "3.0.3",
-  "description": "Delulu Addon Development (DAD) SDK - build, test, and ship HTTP addons for Delulu",
+  "version": "4.0.0",
+  "description": "Delulu Addon Development (DAD) SDK - build, test, and ship HTTP and sandboxed JavaScript addons for Delulu",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -45,7 +45,13 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@types/crypto-js": "^4.2.2",
+    "cheerio": "^1.2.0",
+    "crypto-js": "^4.2.0",
+    "esbuild": "^0.28.2"
   }
 }
