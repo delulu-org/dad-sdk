@@ -12,7 +12,7 @@ DAD supports two primary addon architectures:
 
 ---
 
-## Quick Start: Sandboxed JavaScript Addon (Recommended)
+## Quick Start: Sandboxed JavaScript Addon
 
 ```bash
 # 1. Scaffold a new JS scraper addon

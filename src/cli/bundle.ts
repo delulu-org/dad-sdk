@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import esbuild, { type Plugin } from 'esbuild';
+import type { Plugin } from 'esbuild';
 import { validateManifest } from '../manifest.js';
 
 export interface BundleOptions {
@@ -15,6 +15,19 @@ export interface BundleResult {
   outFile: string;
   sha256: string;
   sizeBytes: number;
+}
+
+async function loadEsbuild(): Promise<any> {
+  try {
+    const mod = await import('esbuild');
+    return mod.default || mod;
+  } catch {
+    console.error(`\n✖ 'esbuild' is required to bundle JavaScript addons.`);
+    console.error(`  Please install it as a devDependency in your addon project:`);
+    console.error(`    npm install -D esbuild\n`);
+    process.exit(1);
+    throw new Error('esbuild is not installed');
+  }
 }
 
 const FORBIDDEN_MODULES = new Set([
@@ -121,6 +134,7 @@ export async function runBundle(entryArg?: string, options: BundleOptions = {}):
   console.log(`\n Bundling ${path.relative(cwd, entryFile)} -> ${path.relative(cwd, outFile)}...`);
 
   // 4. Execute esbuild
+  const esbuild = await loadEsbuild();
   try {
     await esbuild.build({
       entryPoints: [entryFile],

@@ -267,7 +267,8 @@ export function jsAddonTemplate(id: string, name: string): TemplateFile[] {
   },
   "devDependencies": {
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2"
   }
 }
 `,
