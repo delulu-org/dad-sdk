@@ -125,7 +125,7 @@ ambiguous:
   title: 'Movie.2160p.Remux',
   info_hash: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', // 40-hex v1 (or 64-hex v2)
   audio_languages: [],
-  file_idx: 0,                                        // REQUIRED - 0 for single-file
+  file_idx: 0,                                        // REQUIRED
   seeders: 142,
   trackers: ['udp://tracker.example.org:1337/announce'],
 }
@@ -134,7 +134,6 @@ ambiguous:
 A torrent item is identified by `info_hash` + `file_idx`, never `stream_url` -
 emit the hash and Core builds whatever magnet/`.torrent` URL the engine wants.
 `file_idx` is required so an episode inside a season pack is never guessed at;
-`0` means single-file.
 
 Headers are **per-stream** - if you're aggregating multiple providers, each
 stream item carries its own headers. Provider A's `Referer` never leaks onto
@@ -221,7 +220,7 @@ interface DadMetaResponse {
 }
 ```
 
-Every field is optional and nullable - Delulu Core already has poster,
+Every field is optional and nullable - Delulu already has poster,
 backdrop, overview, title, cast, and the title logo from TMDB. Meta addons only
 fill in what TMDB doesn't carry: IMDb ID, overall IMDb rating, season episode ratings, and official trailers.
 
