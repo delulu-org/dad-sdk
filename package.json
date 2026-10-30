@@ -1,6 +1,6 @@
 {
   "name": "@delulu-addon/dad-sdk",
-  "version": "4.0.1",
+  "version": "4.1.0",
   "description": "Delulu Addon Development (DAD) SDK - build, test, and ship HTTP and sandboxed JavaScript addons for Delulu",
   "type": "module",
   "main": "./dist/index.js",
@@ -51,6 +51,9 @@
     "esbuild": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@types/crypto-js": "^4.2.2"
   },
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",

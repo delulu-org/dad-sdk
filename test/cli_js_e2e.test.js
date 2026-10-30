@@ -59,3 +59,70 @@ test('dad init --type js scaffolds a valid JS addon and builds with dad bundle',
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('testJsAddon provides .details(), next(), prev() and CryptoJS in sandbox environment', async () => {
+  const manifest = {
+    id: 'com.example.sandbox-test',
+    name: 'Sandbox Test',
+    version: '1.0.0',
+    type: 'js',
+    bundle: { url: 'https://example.com/bundle.js', sha256: '0'.repeat(64) },
+    capabilities: ['direct_stream'],
+  };
+
+  const bundleCode = `
+    exports.getStreams = async function(req) {
+      const html = '<div class="items"><p class="p1">Item 1</p><p class="p2">Item 2</p></div>';
+      const $ = cheerio.load(html);
+      
+      // Test .details() bulk extraction
+      const details = $('p').details();
+      if (!Array.isArray(details) || details.length !== 2) {
+        throw new Error("details() must return 2 items, got " + JSON.stringify(details));
+      }
+      if (details[0].text !== 'Item 1' || details[0].attrs.class !== 'p1') {
+        throw new Error("Invalid details[0]: " + JSON.stringify(details[0]));
+      }
+
+      // Test $.details static
+      const staticDetails = $.details('p');
+      if (staticDetails.length !== 2) {
+        throw new Error("$.details() failed");
+      }
+
+      // Test next() and prev()
+      const p1 = $('p.p1');
+      const p2 = p1.next();
+      if (p2.text() !== 'Item 2') {
+        throw new Error("next() failed: " + p2.text());
+      }
+      if (p2.prev().text() !== 'Item 1') {
+        throw new Error("prev() failed");
+      }
+
+      // Test CryptoJS
+      const sha256 = CryptoJS.SHA256('hello').toString(CryptoJS.enc.Hex);
+      const sha512 = CryptoJS.SHA512('hello').toString(CryptoJS.enc.Hex);
+      const hmac = CryptoJS.HmacMD5('hello', 'key').toString(CryptoJS.enc.Hex);
+
+      if (!sha256 || !sha512 || !hmac) {
+        throw new Error("CryptoJS hash operations failed");
+      }
+
+      return [
+        {
+          type: 'direct',
+          title: 'Validated Stream',
+          stream_url: 'https://example.com/video.mp4',
+          audio_languages: ['eng'],
+        }
+      ];
+    };
+  `;
+
+  const outcome = await testJsAddon(manifest, bundleCode, [DAD_TEST_FIXTURES[0]]);
+  assert.equal(outcome.producedData, true, 'Addon with details() and CryptoJS must return stream data');
+  const failedProbes = outcome.results.filter((r) => r.status === 'fail');
+  assert.equal(failedProbes.length, 0, `All probes must pass, failed: ${failedProbes.map(p => p.detail).join('; ')}`);
+});
+

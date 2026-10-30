@@ -424,6 +424,43 @@ requests still work.
 
 ---
 
+## Sandboxed JavaScript Runtime & Native Capabilities
+
+Delulu Core runs JavaScript scrapers (`type: "js"`) inside an isolated, high-performance QuickJS engine. To maximize scraping throughput and security, Core exposes hardware-accelerated Rust bindings under familiar web/npm APIs without needing heavy `node_modules`:
+
+### 1. Cheerio DOM Parser (`cheerio`)
+Backed by the native Mozilla Servo engine (`scraper`, `html5ever`, `selectors`):
+- **`const $ = cheerio.load(html)`**: Parses HTML into a Servo DOM tree.
+- **`$('selector')`**: Standard CSS selector query. Supports `.text()`, `.attr(name)`, `.html()`, `.find(subSelector)`, `.each(fn)`, `.first()`, `.last()`, `.eq(idx)`.
+- **`$('selector').next()` / `$('selector').prev()`**: Immediate element sibling navigation.
+- **`$('selector').details()` & `$.details(selector)`**: **Atomic Bulk Extraction**. Fetches `{ id, text, html, attrs }` for all matched elements in a single native pass. Eliminates JS ↔ Rust context-switching overhead and is up to 10x faster when extracting lists of links or episode items.
+
+### 2. Hardware Cryptography (`CryptoJS`)
+Backed by native Rust cryptography:
+- **Hashes**: `CryptoJS.MD5(msg)`, `CryptoJS.SHA1(msg)`, `CryptoJS.SHA256(msg)`, `CryptoJS.SHA512(msg)`
+- **HMAC**: `CryptoJS.HmacMD5(msg, key)`, `CryptoJS.HmacSHA1(msg, key)`, `CryptoJS.HmacSHA256(msg, key)`, `CryptoJS.HmacSHA512(msg, key)`
+- **Ciphers**: `CryptoJS.AES.encrypt(msg, key, options)` and `CryptoJS.AES.decrypt(ciphertext, key, options)`
+  - Supports `CryptoJS.mode.CBC` (default) and `CryptoJS.mode.ECB`.
+  - Supports `CryptoJS.pad.Pkcs7`.
+- **Encoders**: `CryptoJS.enc.Utf8`, `CryptoJS.enc.Hex`, `CryptoJS.enc.Base64`, `CryptoJS.enc.Latin1`.
+
+### 3. Web Standard APIs
+- **`fetch(url, [options])`**: Web-standard HTTP client:
+  - Automatic Brotli/Gzip decompression.
+  - Automatic charset-aware decoding (UTF-8, Windows-1252, ISO-8859-1).
+  - Strict 10-hop SSRF protection with per-hop IP pinning (private RFC 1918 & loopback IPs are blocked).
+  - Supports `redirect: 'follow'` (default) or `redirect: 'manual'`.
+  - AbortSignal support via `AbortController`.
+- **`URL` & `URLSearchParams`**: Full WHATWG standard URL resolution (handles relative paths, query params, etc.).
+- **Global Utilities**: `console.log/info/warn/error`, `setTimeout`, `clearTimeout`, `btoa`, `atob`, `TextEncoder`.
+
+### 4. Sandbox Constraints & Guardrails
+- **CPU Watchdog**: 10 seconds timeout per invocation. Infinite loops are interrupted by the host.
+- **Response Size Ceiling**: Maximum HTTP response size is 10 MB. Streaming responses larger than 10 MB are aborted immediately.
+- **No Node.js Native Modules**: `fs`, `net`, `child_process`, `os`, `http` are forbidden. Bundling with `dad bundle` intercepts and blocks forbidden imports automatically.
+
+---
+
 ## Shipping an addon
 
 1. Deploy your server.

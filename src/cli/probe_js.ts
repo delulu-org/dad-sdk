@@ -49,6 +49,34 @@ export async function testJsAddon(
   }
 
   // 2. Prepare isolated VM context with QuickJS-like globals
+  // Enhance cheerio for parity with Delulu Core's native Servo engine (.details())
+  const wrappedCheerio = {
+    ...cheerio,
+    load: ((...args: any[]) => {
+      const $ = (cheerio as any).load(...args);
+      if ($.fn && !($.fn as any).details) {
+        ($.fn as any).details = function () {
+          const results: any[] = [];
+          this.each((idx: number, el: any) => {
+            results.push({
+              id: `doc:e${idx}`,
+              text: $(el).text(),
+              html: $.html(el),
+              attrs: el.attribs || {},
+            });
+          });
+          return results;
+        };
+      }
+      if (!($ as any).details) {
+        ($ as any).details = function (selector: string) {
+          return $(selector).details();
+        };
+      }
+      return $;
+    }) as typeof cheerio.load,
+  };
+
   const sandboxModule = { exports: {} as any };
   const contextObj: Record<string, any> = {
     console,
@@ -64,14 +92,14 @@ export async function testJsAddon(
     atob: globalThis.atob,
     btoa: globalThis.btoa,
     TextEncoder: globalThis.TextEncoder,
-    cheerio,
+    cheerio: wrappedCheerio,
     CryptoJS,
     module: sandboxModule,
     exports: sandboxModule.exports,
     globalThis: {} as any,
     require: (id: string) => {
       if (id === 'cheerio' || id === 'cheerio-without-node-native' || id === 'react-native-cheerio') {
-        return cheerio;
+        return wrappedCheerio;
       }
       if (id === 'crypto-js') {
         return CryptoJS;

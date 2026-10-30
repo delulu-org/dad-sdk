@@ -268,6 +268,7 @@ export function jsAddonTemplate(id: string, name: string): TemplateFile[] {
   "devDependencies": {
     "typescript": "^5.7.0",
     "@types/node": "^22.0.0",
+    "@types/crypto-js": "^4.2.2",
     "esbuild": "^0.28.2"
   }
 }
@@ -316,14 +317,19 @@ export default defineJsAddon({
    * Runs in Delulu Core's isolated QuickJS sandbox.
    */
   getStreams: async (req) => {
-    console.log(\`[${name}] Scraping streams for TMDB \${req.tmdbId} (\${req.mediaType})\`);
+    console.log(\`[${name}] Scraping streams for TMDB \${req.tmdb_id} (\${req.media_type})\`);
 
     // In QuickJS, Web standard fetch() and native Servo-backed cheerio ($)
     // are available globally with bare-metal speed:
     // const res = await fetch('https://example.com/page');
     // const html = await res.text();
     // const $ = cheerio.load(html);
-    // const link = $('a.download-link').attr('href');
+    //
+    // High-performance atomic bulk extraction (up to 10x faster):
+    // const links = $('a.download-link').details();
+    // for (const link of links) {
+    //   console.log(link.attrs.href, link.text);
+    // }
 
     return [
       {
